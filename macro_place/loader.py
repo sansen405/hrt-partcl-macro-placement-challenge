@@ -80,13 +80,42 @@ def load_benchmark(
 
     num_macros = num_hard + num_soft
 
+    # Extract hard macro pin offsets (relative to macro center)
+    macro_pin_offsets = []
+    pin_map = {}
+    for idx in plc.hard_macro_pin_indices:
+        pin = plc.modules_w_pins[idx]
+        pin_macro = pin.get_macro_name() if hasattr(pin, "get_macro_name") else None
+        if pin_macro:
+            pin_map.setdefault(pin_macro, []).append(
+                [pin.x_offset, pin.y_offset]
+            )
+    for macro_idx in hard_macro_plc_indices:
+        macro_name = plc.modules_w_pins[macro_idx].get_name()
+        offsets = pin_map.get(macro_name, [])
+        macro_pin_offsets.append(
+            torch.tensor(offsets, dtype=torch.float32) if offsets else torch.zeros(0, 2)
+        )
+
+    # Extract I/O port positions
+    port_pos_list = []
+    for idx in plc.port_indices:
+        node = plc.modules_w_pins[idx]
+        x, y = node.get_pos()
+        port_pos_list.append([x, y])
+    port_positions = (
+        torch.tensor(port_pos_list, dtype=torch.float32)
+        if port_pos_list
+        else torch.zeros(0, 2)
+    )
+
     # Convert to tensors
     macro_positions = torch.tensor(macro_positions, dtype=torch.float32)
     macro_sizes = torch.tensor(macro_sizes, dtype=torch.float32)
     macro_fixed = torch.tensor(macro_fixed, dtype=torch.bool)
 
     # Extract net connectivity
-    num_nets = int(plc.net_cnt) if hasattr(plc, "net_cnt") else 0
+    num_nets = int(plc.net_cnt)
     net_nodes = []
     net_weights_tensor = torch.zeros(num_nets, dtype=torch.float32)
 
@@ -109,6 +138,8 @@ def load_benchmark(
         grid_cols=grid_cols,
         hroutes_per_micron=hroutes_per_micron,
         vroutes_per_micron=vroutes_per_micron,
+        port_positions=port_positions,
+        macro_pin_offsets=macro_pin_offsets,
         hard_macro_indices=hard_macro_plc_indices,
         soft_macro_indices=soft_macro_plc_indices,
     )

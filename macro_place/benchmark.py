@@ -46,6 +46,13 @@ class Benchmark:
     grid_rows: int
     grid_cols: int
 
+    # I/O ports (pins on the chip boundary)
+    port_positions: torch.Tensor = field(default_factory=lambda: torch.zeros(0, 2))  # [num_ports, 2]
+
+    # Hard macro pin offsets (relative to macro center)
+    # List of [num_pins_i, 2] tensors, one per hard macro (indices [0, num_hard_macros))
+    macro_pin_offsets: List[torch.Tensor] = field(default_factory=list)
+
     # Routing parameters
     hroutes_per_micron: float = 11.285  # Horizontal routing tracks per micron
     vroutes_per_micron: float = 12.605  # Vertical routing tracks per micron
@@ -109,6 +116,8 @@ class Benchmark:
                 "grid_cols": self.grid_cols,
                 "hroutes_per_micron": self.hroutes_per_micron,
                 "vroutes_per_micron": self.vroutes_per_micron,
+                "port_positions": self.port_positions,
+                "macro_pin_offsets": self.macro_pin_offsets,
                 "hard_macro_indices": self.hard_macro_indices,
                 "soft_macro_indices": self.soft_macro_indices,
             },
@@ -125,6 +134,10 @@ class Benchmark:
             data["num_soft_macros"] = 0
         if "soft_macro_indices" not in data:
             data["soft_macro_indices"] = []
+        if "port_positions" not in data:
+            data["port_positions"] = torch.zeros(0, 2)
+        if "macro_pin_offsets" not in data:
+            data["macro_pin_offsets"] = []
         return cls(**data)
 
     def get_movable_mask(self) -> torch.Tensor:

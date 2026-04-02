@@ -2,6 +2,8 @@
 Utility functions for placement validation and visualization.
 """
 
+import sys
+
 import torch
 from typing import Tuple, List, Optional
 
@@ -71,7 +73,7 @@ def validate_placement(
     # Check overlaps among hard macros only (soft macros naturally overlap)
     if check_overlaps:
         overlap_count = 0
-        num_hard = getattr(benchmark, 'num_hard_macros', benchmark.num_macros)
+        num_hard = benchmark.num_hard_macros
         for i in range(num_hard):
             for j in range(i + 1, num_hard):
                 # Get bounding boxes
@@ -94,7 +96,10 @@ def validate_placement(
 
 
 def visualize_placement(
-    placement: torch.Tensor, benchmark: Benchmark, save_path: Optional[str] = None
+    placement: torch.Tensor,
+    benchmark: Benchmark,
+    save_path: Optional[str] = None,
+    plc=None,
 ):
     """
     Visualize placement (requires matplotlib).
@@ -103,12 +108,16 @@ def visualize_placement(
         placement: [num_macros, 2] positions
         benchmark: Benchmark data
         save_path: Optional path to save figure
+        plc: Optional PlacementCost object (enables net connectivity drawing)
     """
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
     except ImportError:
-        print("Error: matplotlib not installed. Install with: pip install matplotlib")
+        print(
+            "Error: matplotlib not installed. Install with: pip install matplotlib",
+            file=sys.stderr,
+        )
         return
 
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -126,6 +135,7 @@ def visualize_placement(
     )
 
     # Draw macros
+    num_hard = getattr(benchmark, "num_hard_macros", benchmark.num_macros)
     for i in range(benchmark.num_macros):
         x, y = placement[i].tolist()
         w, h = benchmark.macro_sizes[i].tolist()
@@ -133,8 +143,16 @@ def visualize_placement(
         x_min = x - w / 2
         y_min = y - h / 2
 
-        color = "red" if benchmark.macro_fixed[i] else "blue"
-        alpha = 0.3 if benchmark.macro_fixed[i] else 0.5
+        is_soft = i >= num_hard
+        color = (
+            "red"
+            if benchmark.macro_fixed[i]
+            else "lightsteelblue"
+            if is_soft
+            else "blue"
+        )
+        alpha = 0.25 if is_soft else 0.5
+        linestyle = "dashed" if is_soft else "solid"
 
         ax.add_patch(
             Rectangle(
@@ -146,8 +164,72 @@ def visualize_placement(
                 alpha=alpha,
                 edgecolor="black",
                 linewidth=0.5,
+                linestyle=linestyle,
             )
         )
+
+    # Draw hard macro pins as small circles at macro_center + offset
+    if benchmark.macro_pin_offsets:
+        all_pin_x = []
+        all_pin_y = []
+        for i, offsets in enumerate(benchmark.macro_pin_offsets):
+            if offsets.shape[0] == 0:
+                continue
+            cx, cy = placement[i].tolist()
+            all_pin_x.extend((cx + offsets[:, 0]).tolist())
+            all_pin_y.extend((cy + offsets[:, 1]).tolist())
+        if all_pin_x:
+            ax.scatter(
+                all_pin_x,
+                all_pin_y,
+                s=3,
+                c="darkslateblue",
+                zorder=6,
+            )
+
+    # Draw I/O pins as small circles
+    if benchmark.port_positions.shape[0] > 0:
+        pin_x = benchmark.port_positions[:, 0].tolist()
+        pin_y = benchmark.port_positions[:, 1].tolist()
+        ax.scatter(
+            pin_x,
+            pin_y,
+            s=8,
+            c="green",
+            zorder=5,
+            edgecolors="darkgreen",
+            linewidths=0.3,
+        )
+
+    # Draw net connections as star topology (average center → each pin)
+    if plc is not None:
+        from matplotlib.collections import LineCollection
+
+        lines = []
+        for driver_name, sink_names in plc.nets.items():
+            if driver_name not in plc.mod_name_to_indices:
+                continue
+            coords = []
+            driver_idx = plc.mod_name_to_indices[driver_name]
+            dx, dy = plc.modules_w_pins[driver_idx].get_pos()
+            coords.append((dx, dy))
+            for sink_name in sink_names:
+                if sink_name not in plc.mod_name_to_indices:
+                    continue
+                sink_idx = plc.mod_name_to_indices[sink_name]
+                sx, sy = plc.modules_w_pins[sink_idx].get_pos()
+                coords.append((sx, sy))
+            if len(coords) < 2:
+                continue
+            avg_x = sum(c[0] for c in coords) / len(coords)
+            avg_y = sum(c[1] for c in coords) / len(coords)
+            for cx, cy in coords:
+                lines.append([(avg_x, avg_y), (cx, cy)])
+        if lines:
+            lc = LineCollection(
+                lines, colors="gray", alpha=0.05, linewidths=0.5, zorder=1
+            )
+            ax.add_collection(lc)
 
     ax.set_xlim(0, benchmark.canvas_width)
     ax.set_ylim(0, benchmark.canvas_height)
@@ -158,12 +240,41 @@ def visualize_placement(
 
     # Add legend
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
 
     legend_elements = [
-        Patch(facecolor="blue", alpha=0.5, edgecolor="black", label="Movable macros"),
+        Patch(facecolor="blue", alpha=0.5, edgecolor="black", label="Hard macros"),
+        Patch(
+            facecolor="lightsteelblue",
+            alpha=0.1,
+            edgecolor="black",
+            linestyle="dashed",
+            label="Soft macros",
+        ),
         Patch(facecolor="red", alpha=0.3, edgecolor="black", label="Fixed macros"),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="darkslateblue",
+            markeredgecolor="darkslateblue",
+            markersize=5,
+            label="Macro pins",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="green",
+            markeredgecolor="darkgreen",
+            markersize=6,
+            label="I/O pins",
+        ),
     ]
-    ax.legend(handles=legend_elements, loc="upper right")
+    legend = ax.legend(handles=legend_elements, loc="upper right")
+    legend.set_zorder(10)
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
