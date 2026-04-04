@@ -222,11 +222,14 @@ Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (l
 
 | Rank | Team | Avg Proxy Cost | Best | Worst | Overlaps | Runtime | Verified |
 |------|------|---------------|------|-------|----------|---------|----------|
-| 1 | "UT Austin" (DREAMPlace) | **1.4076** | — | — | 0 | 17s/bench | |
+| 1 | "UT Austin" - AS (DREAMPlace Analytical) | **1.4076** | — | — | 0 | 17s/bench | |
 | 2 | "BakaBobo" (Spread+Refine) | **1.4403** | — | — | 0 | 212s/bench | |
 | — | RePlAce (baseline) | **1.4578** | 0.9976 | 1.8370 | 0 | — | :white_check_mark: |
 | 3 | "Convex Optimization" (UWaterloo Student) | **1.4556** | — | — | 0 | 16s total | |
-| 4 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
+| 4 | "oracleX" (Oracle) | **1.5130** | — | — | 0 | 3min/bench | |
+| 5 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
+| 6 | "UT Austin" - RH (DREAMPlace) | **1.6037** | — | — | 0 | 4.5s/bench | |
+| 7 | "UT Austin" - CT (PROXYCost) | **1.8706** | — | — | 0 | 187s/bench | |
 | — | SA (baseline) | 2.1251 | 1.3166 | 3.6726 | 0 | — | :white_check_mark: |
 | — | Greedy Row (demo) | 2.2109 | 1.6728 | 2.7696 | 0 | 0.3s total | :white_check_mark: |
 
