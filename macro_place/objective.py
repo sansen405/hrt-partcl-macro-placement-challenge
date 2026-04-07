@@ -76,6 +76,8 @@ def compute_overlap_metrics(
     macros_with_overlaps = set()
 
     # Check hard macro pairs only for overlap (soft macros naturally overlap)
+    # Tolerance of 1e-3 μm (1 nanometer) to absorb float32 rounding artifacts
+    OVERLAP_TOL = 1e-3
     num_hard = getattr(benchmark, 'num_hard_macros', num_macros)
     for i in range(num_hard):
         for j in range(i + 1, num_hard):
@@ -88,10 +90,10 @@ def compute_overlap_metrics(
             min_sep_y = (heights[i] + heights[j]) / 2.0
 
             # Calculate overlap amounts in each dimension
-            overlap_x = max(0.0, min_sep_x - dx)
-            overlap_y = max(0.0, min_sep_y - dy)
+            overlap_x = max(0.0, min_sep_x - dx - OVERLAP_TOL)
+            overlap_y = max(0.0, min_sep_y - dy - OVERLAP_TOL)
 
-            # Overlap occurs only if BOTH x and y overlap
+            # Overlap occurs only if BOTH x and y overlap beyond tolerance
             if overlap_x > 0 and overlap_y > 0:
                 overlap_area = overlap_x * overlap_y
                 overlap_count += 1

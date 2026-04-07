@@ -71,6 +71,8 @@ def validate_placement(
             violations.append("Fixed macros have been moved")
 
     # Check overlaps among hard macros only (soft macros naturally overlap)
+    # Tolerance of 1e-3 μm (1 nanometer) to absorb float32 rounding artifacts
+    OVERLAP_TOL = 1e-3
     if check_overlaps:
         overlap_count = 0
         num_hard = benchmark.num_hard_macros
@@ -82,9 +84,10 @@ def validate_placement(
                 lx_j, ux_j = x_min[j].item(), x_max[j].item()
                 ly_j, uy_j = y_min[j].item(), y_max[j].item()
 
-                # Check if boxes overlap (NOT just touching)
-                # No overlap if: one box is completely to the left, right, above, or below the other
-                if not (lx_i >= ux_j or ux_i <= lx_j or ly_i >= uy_j or uy_i <= ly_j):
+                # Check if boxes overlap beyond tolerance
+                # No overlap if separated (or within tolerance) in any dimension
+                if not (lx_i >= ux_j - OVERLAP_TOL or ux_i <= lx_j + OVERLAP_TOL or
+                        ly_i >= uy_j - OVERLAP_TOL or uy_i <= ly_j + OVERLAP_TOL):
                     overlap_count += 1
                     if overlap_count <= 5:  # Only report first 5 to avoid spam
                         violations.append(f"Macros {i} and {j} overlap")
