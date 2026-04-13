@@ -227,7 +227,7 @@ Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (l
 | 1 | "Mike Gao" (autoresearch) | **1.3255** | — | — | 0 | 16min/bench | |
 | 2 | "Electric Beatel" (ePlace-Lite) | **1.3874** | — | — | 0 | 283s/bench (GPU) | |
 | 3 | "MTK" (DreamPlace++) | **1.3998** | — | — | 0 | 25s/bench | |
-| 4 | "Varun's Parallel Worlds" (GRPlace) | **1.4044** | — | — | 0 | 125s/bench | |
+| 4 | "Varun's Parallel Worlds" (GRPlace) | **1.4017** | 1.0362 | 1.7298 | 0 | 27s/bench | :white_check_mark: |
 | 5 | "UT Austin" - AS (DREAMPlace Analytical) | **1.4076** | — | — | 0 | 17s/bench | |
 | 6 | "ByteDancer" (Incremental CD) | **1.4151** | 1.0236 | 1.7792 | 0 | 38min/bench | :white_check_mark: |
 | 7 | "BakaBobo" (Spread+Refine) | **1.4403** | — | — | 0 | 212s/bench | |
@@ -237,7 +237,7 @@ Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (l
 | 9 | "UTAUSTIN-CT" (PLC-Exact Congestion-Aware SA) | **1.5062** | — | — | 0 | 35s/bench | |
 | 10 | "oracleX" (Oracle) | **1.5130** | — | — | 0 | 3min/bench | |
 | 11 | "CA" (congestion_aware) | **1.5238** | — | — | 0 | 13s/bench | |
-| 12 | "#5 ubc cpen student" (Gene Pool Shuffle) | **1.5290** | — | — | 0 | 281s/bench | |
+| 12 | "#5 ubc cpen student" (Gene Pool Shuffle) | **1.5337** | 1.1411 | 1.8084 | 0 | 13s/bench | :white_check_mark: |
 | 13 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
 | 14 | "Cezar" (CRISP) | **1.5781** | 1.1896 | 1.8520 | 0 | 4min/bench | :white_check_mark: |
 | 15 | "UT Austin" - RH (DREAMPlace) | **1.6037** | — | — | 0 | 4.5s/bench | |
