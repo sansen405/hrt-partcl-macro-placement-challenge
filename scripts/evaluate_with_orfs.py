@@ -306,6 +306,48 @@ def evaluate_benchmark(
     else:
         orfs_config_dir = Path(f"external/MacroPlacement/Flows/ASAP7/{source_name}/scripts/OpenROAD/{source_name}")
 
+    # Generate ORFS config for nvdla if it doesn't exist (no upstream collateral)
+    if not orfs_config_dir.exists() and source_name == "nvdla":
+        orfs_config_dir.mkdir(parents=True, exist_ok=True)
+        enable_dir = Path("external/MacroPlacement/Enablements/NanGate45")
+        netlist_dir = Path(f"external/MacroPlacement/Flows/NanGate45/nvdla/netlist")
+
+        # Copy Genus netlist and fakeram files
+        shutil.copy(netlist_dir / "NV_NVDLA_partition_c.v", orfs_config_dir)
+        shutil.copy(enable_dir / "lef" / "fakeram45_256x64.lef", orfs_config_dir)
+        shutil.copy(enable_dir / "lib" / "fakeram45_256x64.lib", orfs_config_dir)
+
+        # Write config.mk
+        (orfs_config_dir / "config.mk").write_text("""\
+export DESIGN_NICKNAME = nvdla
+export DESIGN_NAME = NV_nvdla
+export PLATFORM    = nangate45
+
+export VERILOG_FILES = ./designs/$(PLATFORM)/$(DESIGN_NICKNAME)/NV_NVDLA_partition_c.v
+
+export SDC_FILE      = ./designs/$(PLATFORM)/$(DESIGN_NICKNAME)/constraint.sdc
+export ABC_CLOCK_PERIOD_IN_PS = 2000
+
+export ADDITIONAL_LEFS = ./designs/$(PLATFORM)/$(DESIGN_NICKNAME)/fakeram45_256x64.lef
+export ADDITIONAL_LIBS = ./designs/$(PLATFORM)/$(DESIGN_NICKNAME)/fakeram45_256x64.lib
+
+export DIE_AREA    = 0.0 0.0 3200.00 3200.00
+export CORE_AREA   = 10.07 9.94 3189.93 3190.06
+export PLACE_PINS_ARGS = -exclude left:0-400 -exclude left:2800-3200 \\
+                         -exclude right:0-400 -exclude right:2800-3200 \\
+                         -exclude top:0-400 -exclude top:2800-3200 \\
+                         -exclude bottom:0-400 -exclude bottom:2800-3200
+
+export PLACE_DENSITY_LB_ADDON ?= 0.10
+""")
+        # Write constraint.sdc (4ns clock matching other NG45 benchmarks)
+        (orfs_config_dir / "constraint.sdc").write_text("""\
+create_clock [get_ports nvdla_core_clk]  -name core_clock  -period 4
+set_input_delay -clock core_clock 0 [all_inputs]
+set_output_delay -clock core_clock 0 [all_outputs]
+""")
+        print(f"  ✓ Generated ORFS config for nvdla (128 macros, fakeram45_256x64)")
+
     # Fallback: check ORFS built-in designs (maps source_name to ORFS design name)
     orfs_builtin_map = {
         'bp_quad': 'black_parrot',
@@ -358,6 +400,29 @@ def evaluate_benchmark(
         config_mk = design_dir / "config.mk"
         if config_mk.exists():
             config_content = config_mk.read_text()
+
+            # Use pre-mapped Genus gate netlist when available (bypasses Yosys).
+            # This fixes ariane133 where PRESERVE_CELLS causes Yosys to drop
+            # 89 of 133 SRAMs (see issue #50).
+            genus_netlist_dir = Path(
+                f"external/MacroPlacement/Flows/NanGate45/{source_name}/netlist"
+            )
+            if genus_netlist_dir.exists():
+                for candidate in sorted(genus_netlist_dir.glob("*.v")):
+                    with open(candidate) as fv:
+                        n_sram = sum(1 for line in fv if "fakeram45_" in line)
+                    if n_sram > 0:
+                        abs_path = candidate.resolve()
+                        config_content += (
+                            f"\n# Override: use Genus-mapped gate netlist ({n_sram} SRAMs)\n"
+                            f"export SYNTH_NETLIST_FILES = {abs_path}\n"
+                        )
+                        # Remove stale Yosys cache so ORFS uses the Genus netlist
+                        stale_yosys = orfs_root / "flow" / "results" / tech / source_name / "base" / "1_2_yosys.v"
+                        if stale_yosys.is_file():
+                            stale_yosys.unlink()
+                        print(f"  ✓ Using Genus gate netlist: {candidate.name} ({n_sram} SRAMs)")
+                        break
 
             if source_name == "mempool_tile":
                 # 1. Disable hierarchical flow
