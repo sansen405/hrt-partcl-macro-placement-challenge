@@ -575,13 +575,19 @@ set_output_delay -clock core_clock 0 [all_outputs]
             mp_util.write_text(mp_util_text)
             print(f"  ✓ Patched macro_place_util.tcl to support SKIP_RTLMP")
 
-        # Set SKIP_RTLMP in config
+        # Set SKIP_RTLMP in config (only when we're providing our own placement)
         config_mk = design_dir / "config.mk"
         config_text = config_mk.read_text()
-        if 'SKIP_RTLMP' not in config_text:
+        if placement_path is not None and 'SKIP_RTLMP' not in config_text:
             config_text += '\nexport SKIP_RTLMP = 1\n'
             config_mk.write_text(config_text)
-        print(f"  ✓ Set SKIP_RTLMP=1 in config")
+            print(f"  ✓ Set SKIP_RTLMP=1 in config")
+        elif placement_path is None:
+            # No custom placement — let ORFS's rtl_macro_placer handle it (baseline mode)
+            # Remove MACRO_PLACEMENT_TCL so ORFS does its own placement
+            config_text = re.sub(r'\nexport MACRO_PLACEMENT_TCL\s*=.*\n', '\n', config_text)
+            config_mk.write_text(config_text)
+            print(f"  ✓ Baseline mode: letting ORFS rtl_macro_placer handle placement")
 
         # Parse CORE_AREA from config.mk and regenerate TCL with clamping
         core_area = None
