@@ -499,19 +499,7 @@ set_output_delay -clock core_clock 0 [all_outputs]
                 print(f"  ✓ Fixed mempool_tile config (disabled hierarchical flow, increased die to 2000x2000, opened all pin sides)")
 
             if source_name in ("ariane133", "ariane136"):
-                # Increase die/core area for 133/136 macros with Genus netlist.
-                # The default 2072x2120 is too tight for PDN channel routing.
-                config_content = re.sub(
-                    r'export DIE_AREA\s*=\s*[\d. ]+',
-                    'export DIE_AREA    = 0.0 0.0 3000.00 3000.00',
-                    config_content
-                )
-                config_content = re.sub(
-                    r'export CORE_AREA\s*=\s*[\d. ]+',
-                    'export CORE_AREA   = 10.07 9.94 2989.93 2990.06',
-                    config_content
-                )
-                # Reduce macro halo so macros fit (default 22.4x15.12 is too large)
+                # Reduce macro halo so macros fit (default 22.4x15.12 is too large for 133+ macros)
                 if 'MACRO_PLACE_HALO' not in config_content:
                     config_content += '\nexport MACRO_PLACE_HALO = 5.0 5.0\n'
                 else:
@@ -520,7 +508,7 @@ set_output_delay -clock core_clock 0 [all_outputs]
                         'export MACRO_PLACE_HALO = 5.0 5.0',
                         config_content
                     )
-                print(f"  ✓ Enlarged {source_name} die to 3000x3000, reduced MACRO_PLACE_HALO to 5.0 5.0")
+                print(f"  ✓ Reduced {source_name} MACRO_PLACE_HALO to 5.0 5.0")
 
             if source_name == "black_parrot":
                 # Disable hierarchical synthesis — we use our own macro placement
