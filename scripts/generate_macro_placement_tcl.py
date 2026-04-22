@@ -125,6 +125,31 @@ def _plc_extract_group_and_index(plc_name):
     return prefix, macro_idx
 
 
+def _plc_to_odb_name(plc_name):
+    """Convert a .plc hierarchical name to the flat ODB instance name.
+
+    Verilog hierarchy flattens to ODB with:
+      '/' -> '.'
+      '[N].' -> '_N__'  (mid-hierarchy generate index)
+      '[N]' at end -> '_N_' (trailing generate index)
+      '.' within a level stays as '.' in ODB
+
+    Examples:
+      i_tile/gen_banks[3].mem_bank/genblk1.sram_instance
+        -> i_tile.gen_banks_3__mem_bank.genblk1.sram_instance
+
+      u_NV_NVDLA_cbuf/u_cbuf_ram_bank0_ram0/rmod/rmod_a
+        -> u_NV_NVDLA_cbuf.u_cbuf_ram_bank0_ram0.rmod.rmod_a
+    """
+    # Handle [N]. pattern (generate block mid-hierarchy)
+    name = re.sub(r'\[(\d+)\]\.', r'_\1__.', plc_name)
+    # Handle [N] at end of a segment before '/'
+    name = re.sub(r'\[(\d+)\](?=/|$)', r'_\1_', name)
+    # Hierarchy separator
+    name = name.replace('/', '.')
+    return name
+
+
 def write_orfs_macro_placement(placement, benchmark, plc, output_file, core_area=None):
     """
     Write macro placement in ORFS format using place_macro command.
@@ -169,6 +194,7 @@ def write_orfs_macro_placement(placement, benchmark, plc, output_file, core_area
 
     # Build placement data keyed by (group_prefix, flat_macro_index)
     group_data = defaultdict(dict)  # group_prefix -> {K: (x, y, orient, plc_name)}
+    direct_placements = []  # For non-Ariane designs: (odb_name, x, y, orient, plc_name)
     total_macros = 0
 
     for i, macro_idx in enumerate(benchmark.hard_macro_indices):
@@ -197,7 +223,10 @@ def write_orfs_macro_placement(placement, benchmark, plc, output_file, core_area
             group_data[group_prefix][macro_k] = (x_ll, y_ll, orientation, plc_name)
             total_macros += 1
         else:
-            print(f"  WARNING: Could not parse .plc name: {plc_name}")
+            # Fallback: convert plc name directly to ODB name (mempool_tile, nvdla, etc.)
+            odb_name = _plc_to_odb_name(plc_name)
+            direct_placements.append((odb_name, x_ll, y_ll, orientation, plc_name))
+            total_macros += 1
 
     with open(output_file, 'w') as f:
         f.write("# Macro Placement for OpenROAD-flow-scripts\n")
@@ -264,6 +293,23 @@ dict for {prefix entries} $_odb_groups {
 }
 
 """)
+
+        # Direct placements for non-Ariane designs (mempool_tile, nvdla, etc.)
+        if direct_placements:
+            f.write("# Direct placements (non-genblk naming)\n")
+            f.write("set block [ord::get_db_block]\n" if not group_data else "")
+            for odb_name, x_ll, y_ll, orient, plc_name in direct_placements:
+                odb_escaped = odb_name.replace('[', '\\[').replace(']', '\\]')
+                f.write(f'# {plc_name}\n')
+                f.write(f'set _inst [$block findInst "{odb_escaped}"]\n')
+                f.write(f'if {{$_inst ne "NULL"}} {{\n')
+                f.write(f'    place_macro -macro_name [list {odb_escaped}] -location [list {x_ll:.6f} {y_ll:.6f}] -orientation {orient}\n')
+                f.write(f'    incr _placed\n')
+                f.write(f'}} else {{\n')
+                f.write(f'    puts "WARNING: ODB instance not found: {odb_escaped}"\n')
+                f.write(f'}}\n')
+            f.write("\n")
+
         f.write(f'puts "Placed $_placed macros (expected {total_macros})"\n')
         f.write(f'if {{$_placed != {total_macros}}} {{\n')
         f.write(f'    puts "WARNING: Expected {total_macros} macros but placed $_placed"\n')
@@ -273,8 +319,10 @@ dict for {prefix entries} $_odb_groups {
         f.write('    }\n')
         f.write("}\n")
 
+    n_genblk = len(group_data)
+    n_direct = len(direct_placements)
     print(f"✓ Generated ORFS macro placement TCL: {output_file}")
-    print(f"  {total_macros} macros across {len(group_data)} sram groups")
+    print(f"  {total_macros} macros ({n_genblk} sram groups, {n_direct} direct placements)")
 
 
 def main():
