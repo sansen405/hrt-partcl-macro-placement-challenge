@@ -225,7 +225,7 @@ Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (l
 
 | Rank | Team | Avg Proxy Cost | Best | Worst | Overlaps | Runtime | Verified | Notes |
 |------|------|---------------|------|-------|----------|---------|----------|-------|
-| 1 | "Cezar" (ReFine) | **1.0666** | — | — | 0 | 5min/bench | | Updated 4/21; previous CRISP verified at 1.5781 |
+| 1 | "Cezar" (ReFine) | **1.2224** | 0.8843 | 1.5115 | 0 | 5min/bench | :white_check_mark: | Verified 1.2224 vs self-reported 1.0666; beats RePlAce by 16.2%, SA by 42.5%; previous CRISP verified at 1.5781 |
 | 2 | "MTK" (DreamPlace++) | **1.2818** | 0.9073 | 1.6529 | 0 | 37s/bench (GPU) | :white_check_mark: | Verified better than self-reported 1.317; beats RePlAce on all 17 benchmarks |
 | 3 | "RoRa" (RipPlace) | **1.3241** | — | — | 0 | 694s/bench | | |
 | 4 | "Mike Gao" (autoresearch) | **1.3255** | — | — | 0 | 16min/bench | | |
