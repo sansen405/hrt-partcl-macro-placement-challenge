@@ -1,0 +1,792 @@
+# GPU Analytical Macro Placer v6 — Pilot Race (top-k vs eDensity)
+# Key changes:
+#   1. FP32 on GPU (32x faster than FP64 on T4)
+#   2. Pilot race: run both density methods for 200 iters, pick winner
+#   3. Macro halos + L-BFGS + congestion from v4
+#   4. Target: <12 min total, best-of-both score
+
+from __future__ import annotations
+
+import math
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from macro_place.benchmark import Benchmark
+
+
+def benchmark_stress_tier(benchmark: Benchmark):
+    nh = max(int(benchmark.num_hard_macros), 1)
+    nn = int(benchmark.num_nets)
+    nm = int(benchmark.num_macros)
+    ratio = nn / nh
+    if nh >= 620 or nn >= 30000 or nm >= 2500 or (ratio >= 78 and nh >= 220):
+        return 2
+    if nh >= 380 or nn >= 15000 or nm >= 1950 or ratio >= 50:
+        return 1
+    return 0
+
+
+def _phase_profile(tier: int, target_util: float):
+    """
+    Select optimization profile by stress tier.
+
+    This is intentionally benchmark-agnostic: only tier/utilization drive switches.
+    """
+    match tier:
+        case 0:
+            return {
+                "congestion_start_frac": 0.60,
+                "pilot_congestion_weight": 0.20,
+                "lbfgs_congestion_weight": 0.00,
+            }
+        case 1:
+            cstart = 0.54
+            if target_util >= 0.62:
+                cstart -= 0.04
+            if target_util >= 0.70:
+                cstart -= 0.04
+            return {
+                "congestion_start_frac": float(min(0.65, max(0.30, cstart))),
+                "pilot_congestion_weight": 0.50,
+                "lbfgs_congestion_weight": 0.05,
+            }
+        case _:
+            cstart = 0.48
+            if target_util >= 0.62:
+                cstart -= 0.04
+            if target_util >= 0.70:
+                cstart -= 0.04
+            lbfgs_cw = 0.08
+            if target_util >= 0.62:
+                lbfgs_cw *= 1.1
+            return {
+                "congestion_start_frac": float(min(0.65, max(0.28, cstart))),
+                "pilot_congestion_weight": 0.50,
+                "lbfgs_congestion_weight": float(min(lbfgs_cw, 0.1)),
+            }
+
+
+def _uniform_spread(benchmark: Benchmark, dev, dt):
+    nh = benchmark.num_hard_macros
+    cw = float(benchmark.canvas_width)
+    ch = float(benchmark.canvas_height)
+    init = benchmark.macro_positions.to(dev, dt).clone()
+    fix = benchmark.macro_fixed.to(dev)
+    movable = (~fix[:nh]).nonzero(as_tuple=False).squeeze(1)
+    n_mov = movable.shape[0]
+    if n_mov == 0:
+        return init
+    cols = max(1, math.ceil(math.sqrt(n_mov * cw / ch)))
+    rows = max(1, math.ceil(n_mov / cols))
+    xs = torch.linspace(cw * 0.05, cw * 0.95, cols, device=dev, dtype=dt)
+    ys = torch.linspace(ch * 0.05, ch * 0.95, rows, device=dev, dtype=dt)
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+    grid_pts = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)[:n_mov]
+    hw = benchmark.macro_sizes[:nh, 0].to(dev, dt) / 2
+    hh = benchmark.macro_sizes[:nh, 1].to(dev, dt) / 2
+    for k, i in enumerate(movable.tolist()):
+        init[i, 0] = grid_pts[k, 0].clamp(hw[i], cw - hw[i])
+        init[i, 1] = grid_pts[k, 1].clamp(hh[i], ch - hh[i])
+    return init
+
+
+def _build_nets(bm: Benchmark, dev, dt):
+    port_pos = bm.port_positions.to(dev, dt)
+    valid = [n for n in bm.net_nodes if len(n) >= 2]
+    if not valid:
+        return (
+            torch.zeros(0, 1, dtype=torch.long, device=dev),
+            torch.zeros(0, 1, dtype=torch.bool, device=dev),
+            port_pos,
+        )
+    k_max = max(len(n) for n in valid)
+    idx = torch.zeros(len(valid), k_max, dtype=torch.long, device=dev)
+    msk = torch.zeros(len(valid), k_max, dtype=torch.bool, device=dev)
+    for i, n in enumerate(valid):
+        l = len(n)
+        idx[i, :l] = n.to(dev)
+        msk[i, :l] = True
+    return idx, msk, port_pos
+
+
+def _wa_wirelength(pos_all, net_idx, net_mask, gamma):
+    neg_inf = float("-inf")
+    px = pos_all[net_idx, 0]
+    py = pos_all[net_idx, 1]
+    sm_xp = F.softmax(px.masked_fill(~net_mask, neg_inf) / gamma, dim=1)
+    sm_xn = F.softmax((-px).masked_fill(~net_mask, neg_inf) / gamma, dim=1)
+    sm_yp = F.softmax(py.masked_fill(~net_mask, neg_inf) / gamma, dim=1)
+    sm_yn = F.softmax((-py).masked_fill(~net_mask, neg_inf) / gamma, dim=1)
+    return ((px * sm_xp).sum(1) - (px * sm_xn).sum(1) + (py * sm_yp).sum(1) - (py * sm_yn).sum(1)).sum()
+
+
+# v2 density: top-k bin overlap (good on ibm01, ibm04, ibm09, ibm10, ibm12, ibm17, ibm18)
+def _density_topk(pos_all, sizes, nm, gx, gy, bw, bh):
+    cx = pos_all[:nm, 0]
+    cy = pos_all[:nm, 1]
+    mw = sizes[:nm, 0]
+    mh = sizes[:nm, 1]
+    ox = torch.clamp(
+        torch.min(cx[:, None] + mw[:, None] / 2, gx[None, :] + bw / 2)
+        - torch.max(cx[:, None] - mw[:, None] / 2, gx[None, :] - bw / 2),
+        min=0.0,
+    )
+    oy = torch.clamp(
+        torch.min(cy[:, None] + mh[:, None] / 2, gy[None, :] + bh / 2)
+        - torch.max(cy[:, None] - mh[:, None] / 2, gy[None, :] - bh / 2),
+        min=0.0,
+    )
+    dens = (oy.T @ ox) / (bw * bh)
+    flat = dens.reshape(-1)
+    k = max(1, int(flat.shape[0] * 0.1))
+    top_k, _ = torch.topk(flat, k, sorted=False)
+    return 0.5 * top_k.mean()
+
+
+# v4 density: eDensity FFT Poisson (good on ibm02, ibm03, ibm06, ibm07, ibm08, ibm11, ibm13, ibm15, ibm16)
+def _density_edensity(pos_all, sizes, nm, gx, gy, bw, bh, target_util, K2_inv):
+    cx = pos_all[:nm, 0]
+    cy = pos_all[:nm, 1]
+    mw = sizes[:nm, 0]
+    mh = sizes[:nm, 1]
+    ox = torch.clamp(
+        torch.min(cx[:, None] + mw[:, None] / 2, gx[None, :] + bw / 2)
+        - torch.max(cx[:, None] - mw[:, None] / 2, gx[None, :] - bw / 2),
+        min=0.0,
+    )
+    oy = torch.clamp(
+        torch.min(cy[:, None] + mh[:, None] / 2, gy[None, :] + bh / 2)
+        - torch.max(cy[:, None] - mh[:, None] / 2, gy[None, :] - bh / 2),
+        min=0.0,
+    )
+    rho = (oy.T @ ox) / (bw * bh)
+    rho_bar = rho - target_util
+    rho_hat = torch.fft.rfft2(rho_bar)
+    psi_hat = rho_hat * K2_inv
+    psi = torch.fft.irfft2(psi_hat, s=rho_bar.shape)
+    return 0.5 * (rho_bar * psi).sum()
+
+
+def _congestion_loss(pos_all, net_idx, net_mask, gx, gy, bw, bh, gamma):
+    neg_inf = float("-inf")
+    px = pos_all[net_idx, 0]
+    py = pos_all[net_idx, 1]
+    xmax = (px * F.softmax(px.masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    xmin = -((-px) * F.softmax((-px).masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    ymax = (py * F.softmax(py.masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    ymin = -((-py) * F.softmax((-py).masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    n_pins = net_mask.sum(1).to(px.dtype)
+    w = (xmax - xmin).clamp(min=bw)
+    h = (ymax - ymin).clamp(min=bh)
+    demand = n_pins / (w * h + 1e-9)
+    tau = max(bw, bh) * 0.3
+    gx_ = torch.sigmoid((gx[None, :] - xmin[:, None]) / tau) - torch.sigmoid(
+        (gx[None, :] - xmax[:, None]) / tau
+    )
+    gy_ = torch.sigmoid((gy[None, :] - ymin[:, None]) / tau) - torch.sigmoid(
+        (gy[None, :] - ymax[:, None]) / tau
+    )
+    cong = gy_.T @ (demand[:, None] * gx_)
+    flat = cong.reshape(-1)
+    k = max(1, int(flat.shape[0] * 0.1))
+    top, _ = torch.topk(flat, k)
+    return top.mean()
+
+
+def _legalize(pos_t, sizes, fixed_t, nh, cw, ch, gap=0.05):
+    pos = pos_t[:nh].detach().cpu().numpy().copy().astype(np.float64)
+    sz = sizes[:nh].cpu().numpy().astype(np.float64)
+    fix = fixed_t[:nh].cpu().numpy()
+    hw = sz[:, 0] / 2
+    hh = sz[:, 1] / 2
+    mov = ~fix
+    sep_x = hw[:, None] + hw[None, :]
+    sep_y = hh[:, None] + hh[None, :]
+    for _ in range(150):
+        dx = np.abs(pos[:, 0:1] - pos[:, 0])
+        dy = np.abs(pos[:, 1:2] - pos[:, 1])
+        ov = (dx < sep_x + gap) & (dy < sep_y + gap)
+        np.fill_diagonal(ov, False)
+        if not ov.any():
+            break
+        oi, oj = np.where(np.triu(ov, k=1))
+        for i, j in zip(oi, oj):
+            adx = abs(pos[i, 0] - pos[j, 0])
+            ady = abs(pos[i, 1] - pos[j, 1])
+            ovx = sep_x[i, j] + gap - adx
+            ovy = sep_y[i, j] + gap - ady
+            if ovx <= 0 or ovy <= 0:
+                continue
+            if ovx < ovy:
+                sgn = 1.0 if pos[i, 0] >= pos[j, 0] else -1.0
+                d = ovx / 2 + 0.01
+                if mov[i]:
+                    pos[i, 0] += sgn * d
+                if mov[j]:
+                    pos[j, 0] -= sgn * d
+            else:
+                sgn = 1.0 if pos[i, 1] >= pos[j, 1] else -1.0
+                d = ovy / 2 + 0.01
+                if mov[i]:
+                    pos[i, 1] += sgn * d
+                if mov[j]:
+                    pos[j, 1] -= sgn * d
+        pos[:, 0] = np.clip(pos[:, 0], hw, cw - hw)
+        pos[:, 1] = np.clip(pos[:, 1], hh, ch - hh)
+    dx = np.abs(pos[:, 0:1] - pos[:, 0])
+    dy = np.abs(pos[:, 1:2] - pos[:, 1])
+    ov = (dx < sep_x + gap) & (dy < sep_y + gap)
+    np.fill_diagonal(ov, False)
+    if not ov.any():
+        result = pos_t.clone()
+        result[:nh] = torch.tensor(pos, device=pos_t.device, dtype=pos_t.dtype)
+        return result
+    areas = sz[:, 0] * sz[:, 1]
+    order = np.argsort(-areas)
+    placed = fix.copy()
+    legal = pos.copy()
+    for idx in order:
+        if fix[idx]:
+            placed[idx] = True
+            continue
+        if placed.any():
+            ddx = np.abs(legal[idx, 0] - legal[:, 0])
+            ddy = np.abs(legal[idx, 1] - legal[:, 1])
+            col = (ddx < sep_x[idx] + gap) & (ddy < sep_y[idx] + gap) & placed
+            col[idx] = False
+            if not col.any():
+                placed[idx] = True
+                continue
+        step = max(sz[idx, 0], sz[idx, 1]) * 0.25
+        orig = pos[idx].copy()
+        best_p = legal[idx].copy()
+        best_d = float("inf")
+        for r in range(1, 300):
+            found = False
+            for dxi in range(-r, r + 1):
+                ys_list = [-r, r] if abs(dxi) != r else range(-r, r + 1)
+                for dyi in ys_list:
+                    cx_ = np.clip(orig[0] + dxi * step, hw[idx], cw - hw[idx])
+                    cy_ = np.clip(orig[1] + dyi * step, hh[idx], ch - hh[idx])
+                    if placed.any():
+                        ddx = np.abs(cx_ - legal[:, 0])
+                        ddy = np.abs(cy_ - legal[:, 1])
+                        col = (ddx < sep_x[idx] + gap) & (ddy < sep_y[idx] + gap) & placed
+                        col[idx] = False
+                        if col.any():
+                            continue
+                    d = (cx_ - orig[0]) ** 2 + (cy_ - orig[1]) ** 2
+                    if d < best_d:
+                        best_d = d
+                        best_p = np.array([cx_, cy_])
+                        found = True
+            if found:
+                break
+        legal[idx] = best_p
+        placed[idx] = True
+    result = pos_t.clone()
+    result[:nh] = torch.tensor(legal, device=pos_t.device, dtype=pos_t.dtype)
+    return result
+
+
+def _run_phase1(
+    p_init,
+    port_pos,
+    net_idx,
+    net_mask,
+    sizes,
+    fixed,
+    init,
+    nm,
+    nh,
+    gx,
+    gy,
+    bw,
+    bh,
+    cw,
+    ch,
+    diag,
+    lb,
+    ub,
+    density_fn,
+    density_norm,
+    wl_0,
+    cl_0,
+    global_iters,
+    lr_adapt,
+    dw_s,
+    dw_e,
+    gamma_s,
+    gamma_e,
+    tier,
+    congestion_start_frac,
+    dev,
+    dt,
+):
+    """Run Phase 1 optimization with a given density function."""
+    p = p_init.clone().requires_grad_(True)
+    opt = torch.optim.Adam([p], lr=lr_adapt)
+
+    for k in range(global_iters):
+        frac = k / max(global_iters - 1, 1)
+        gamma = diag * gamma_s * (gamma_e / gamma_s) ** frac
+        dw = dw_s * (dw_e / dw_s) ** frac
+
+        opt.zero_grad()
+        all_pos = torch.cat([p, port_pos], dim=0)
+
+        wl_n = _wa_wirelength(all_pos, net_idx, net_mask, gamma) / wl_0
+        dl_n = density_fn(p) / density_norm
+
+        if tier == 0 and abs(congestion_start_frac - 0.6) < 1e-9:
+            # Exact legacy ramp used by the original tier-0 behavior.
+            ramp = max(0.0, (k - global_iters * 0.6) / (global_iters * 0.4))
+        else:
+            ramp_span = max(1e-6, 1.0 - congestion_start_frac)
+            ramp = max(0.0, (frac - congestion_start_frac) / ramp_span)
+        tier_cw = [0.05, 0.15, 0.25][tier]
+        cong_w = tier_cw * ramp
+        if cong_w > 0:
+            cl_n = _congestion_loss(all_pos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+        else:
+            cl_n = torch.tensor(0.0, device=dev, dtype=dt)
+
+        loss = wl_n + dw * dl_n + cong_w * cl_n
+        loss.backward()
+
+        with torch.no_grad():
+            p.grad[fixed] = 0.0
+            p.grad[nh:] = 0.0
+            torch.nn.utils.clip_grad_norm_([p], max_norm=diag * 0.5)
+
+        opt.step()
+        with torch.no_grad():
+            p.data = torch.max(torch.min(p.data, ub), lb)
+            p.data[fixed] = init[fixed]
+
+    return p.detach()
+
+
+class AnalyticalPlacer:
+    def __init__(
+        self,
+        global_iters=800,
+        pilot_iters=200,
+        soft_refine_iters=250,
+        lr=0.3,
+        gamma_start_frac=0.08,
+        gamma_end_frac=0.003,
+        dw_start=0.005,
+        dw_end=5.0,
+        dw_phase3=None,
+        seed=42,
+        verbose=True,
+        adaptive_hard=True,
+        lbfgs_steps=12,
+        lbfgs_max_iter=10,
+        halo_frac=0.08,
+    ):
+        self.global_iters = global_iters
+        self.pilot_iters = pilot_iters
+        self.soft_refine_iters = soft_refine_iters
+        self.lr = lr
+        self.gamma_s = gamma_start_frac
+        self.gamma_e = gamma_end_frac
+        self.dw_s = dw_start
+        self.dw_e = dw_end
+        self.dw_p3 = dw_phase3 if dw_phase3 is not None else dw_end
+        self.seed = seed
+        self.verbose = verbose
+        self.adaptive_hard = adaptive_hard
+        self.lbfgs_steps = lbfgs_steps
+        self.lbfgs_max_iter = lbfgs_max_iter
+        self.halo_frac = halo_frac
+
+    def place(self, benchmark: Benchmark) -> torch.Tensor:
+        t0 = time.time()
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dt = torch.float32 if dev.type == "cuda" else torch.float64
+
+        nh = benchmark.num_hard_macros
+        nm = benchmark.num_macros
+        cw = float(benchmark.canvas_width)
+        ch = float(benchmark.canvas_height)
+        diag = math.hypot(cw, ch)
+        gr, gc = benchmark.grid_rows, benchmark.grid_cols
+        bw, bh = cw / gc, ch / gr
+
+        tier = benchmark_stress_tier(benchmark) if self.adaptive_hard else 0
+
+        global_iters = self.global_iters
+        pilot_iters = self.pilot_iters
+        soft_refine_iters = self.soft_refine_iters
+        lr_adapt = self.lr
+        dw_s_adapt = self.dw_s
+        dw_e_adapt = self.dw_e
+        dw_p3_adapt = self.dw_p3
+        gamma_e_adapt = self.gamma_e
+        if tier == 1:
+            global_iters = int(round(global_iters * 1.14))
+            soft_refine_iters = int(round(soft_refine_iters * 1.22))
+            dw_e_adapt = min(dw_e_adapt * 1.08, 6.0)
+            lr_adapt *= 0.95
+        elif tier == 2:
+            global_iters = int(round(global_iters * 1.36))
+            soft_refine_iters = int(round(soft_refine_iters * 1.48))
+            dw_e_adapt = min(dw_e_adapt * 1.16, 6.85)
+            lr_adapt *= 0.9
+            gamma_e_adapt *= 0.92
+
+        sizes_real = benchmark.macro_sizes.to(dev, dt)
+        sizes_halo = sizes_real.clone()
+        sizes_halo[:nh, 0] *= 1 + self.halo_frac
+        sizes_halo[:nh, 1] *= 1 + self.halo_frac
+
+        fixed = benchmark.macro_fixed.to(dev)
+        init = benchmark.macro_positions.to(dev, dt)
+
+        hw_h = sizes_halo[:, 0] / 2
+        hh_h = sizes_halo[:, 1] / 2
+        lb = torch.stack([hw_h, hh_h], dim=1)
+        ub = torch.stack([cw - hw_h, ch - hh_h], dim=1)
+
+        net_idx, net_mask, port_pos = _build_nets(benchmark, dev, dt)
+        if net_idx.shape[0] == 0:
+            return init.cpu().float()
+
+        gx = (torch.arange(gc, device=dev, dtype=dt) + 0.5) * bw
+        gy = (torch.arange(gr, device=dev, dtype=dt) + 0.5) * bh
+
+        kx_freq = torch.fft.rfftfreq(gc, device=dev, dtype=dt) * 2 * math.pi
+        ky_freq = torch.fft.fftfreq(gr, device=dev, dtype=dt) * 2 * math.pi
+        Ky, Kx = torch.meshgrid(ky_freq, kx_freq, indexing="ij")
+        K2 = Kx**2 + Ky**2
+        K2[0, 0] = 1.0
+        K2_inv = 1.0 / K2
+        K2_inv[0, 0] = 0.0
+
+        total_area_halo = (sizes_halo[:nm, 0] * sizes_halo[:nm, 1]).sum().item()
+        target_util = total_area_halo / (cw * ch)
+        profile = _phase_profile(tier, target_util)
+        congestion_start_frac = profile["congestion_start_frac"]
+
+        pos = _uniform_spread(benchmark, dev, dt)
+
+        gamma_init = diag * self.gamma_s
+        with torch.no_grad():
+            apos0 = torch.cat([pos, port_pos], dim=0)
+            wl_0 = max(abs(_wa_wirelength(apos0, net_idx, net_mask, gamma_init).item()), 1.0)
+            topk_0 = max(abs(_density_topk(pos, sizes_halo, nm, gx, gy, bw, bh).item()), 1e-6)
+            edens_0 = max(
+                abs(
+                    _density_edensity(
+                        pos, sizes_halo, nm, gx, gy, bw, bh, target_util, K2_inv
+                    ).item()
+                ),
+                1e-3,
+            )
+            cl_0 = max(
+                abs(
+                    _congestion_loss(
+                        apos0, net_idx, net_mask, gx, gy, bw, bh, gamma_init
+                    ).item()
+                ),
+                1e-6,
+            )
+
+        if self.verbose:
+            print(
+                f"  [{benchmark.name}] Pilot race: {pilot_iters} iters each, "
+                f"tier={tier} halo={self.halo_frac}",
+                flush=True,
+            )
+
+        def topk_fn(p):
+            return _density_topk(p, sizes_halo, nm, gx, gy, bw, bh)
+
+        def edens_fn(p):
+            return _density_edensity(p, sizes_halo, nm, gx, gy, bw, bh, target_util, K2_inv)
+
+        pos_a = _run_phase1(
+            pos,
+            port_pos,
+            net_idx,
+            net_mask,
+            sizes_halo,
+            fixed,
+            init,
+            nm,
+            nh,
+            gx,
+            gy,
+            bw,
+            bh,
+            cw,
+            ch,
+            diag,
+            lb,
+            ub,
+            topk_fn,
+            topk_0,
+            wl_0,
+            cl_0,
+            pilot_iters,
+            lr_adapt,
+            self.dw_s,
+            dw_e_adapt,
+            self.gamma_s,
+            gamma_e_adapt,
+            tier,
+            congestion_start_frac,
+            dev,
+            dt,
+        )
+
+        pos_b = _run_phase1(
+            pos,
+            port_pos,
+            net_idx,
+            net_mask,
+            sizes_halo,
+            fixed,
+            init,
+            nm,
+            nh,
+            gx,
+            gy,
+            bw,
+            bh,
+            cw,
+            ch,
+            diag,
+            lb,
+            ub,
+            edens_fn,
+            edens_0,
+            wl_0,
+            cl_0,
+            pilot_iters,
+            lr_adapt,
+            self.dw_s,
+            dw_e_adapt,
+            self.gamma_s,
+            gamma_e_adapt,
+            tier,
+            congestion_start_frac,
+            dev,
+            dt,
+        )
+
+        with torch.no_grad():
+            gamma_eval = diag * self.gamma_s * (gamma_e_adapt / self.gamma_s) ** (
+                pilot_iters / max(global_iters - 1, 1)
+            )
+            apos_a = torch.cat([pos_a, port_pos], dim=0)
+            apos_b = torch.cat([pos_b, port_pos], dim=0)
+            wl_a = _wa_wirelength(apos_a, net_idx, net_mask, gamma_eval).item()
+            wl_b = _wa_wirelength(apos_b, net_idx, net_mask, gamma_eval).item()
+            topk_a = _density_topk(pos_a, sizes_halo, nm, gx, gy, bw, bh).item()
+            topk_b = _density_topk(pos_b, sizes_halo, nm, gx, gy, bw, bh).item()
+            edens_a = _density_edensity(
+                pos_a, sizes_halo, nm, gx, gy, bw, bh, target_util, K2_inv
+            ).item()
+            edens_b = _density_edensity(
+                pos_b, sizes_halo, nm, gx, gy, bw, bh, target_util, K2_inv
+            ).item()
+            c_a = _congestion_loss(apos_a, net_idx, net_mask, gx, gy, bw, bh, gamma_eval).item()
+            c_b = _congestion_loss(apos_b, net_idx, net_mask, gx, gy, bw, bh, gamma_eval).item()
+            if tier == 0:
+                # Keep tier-0 winner selection identical to the original behavior.
+                score_a = wl_a / wl_0 + 0.5 * topk_a / topk_0 + 0.5 * c_a / cl_0
+                score_b = wl_b / wl_0 + 0.5 * topk_b / topk_0 + 0.5 * c_b / cl_0
+            else:
+                pilot_cw = profile["pilot_congestion_weight"]
+                pilot_dw = (1.0 - pilot_cw) * 0.5
+                score_a = (
+                    wl_a / wl_0
+                    + pilot_dw * topk_a / topk_0
+                    + pilot_dw * edens_a / edens_0
+                    + pilot_cw * c_a / cl_0
+                )
+                score_b = (
+                    wl_b / wl_0
+                    + pilot_dw * topk_b / topk_0
+                    + pilot_dw * edens_b / edens_0
+                    + pilot_cw * c_b / cl_0
+                )
+
+        phase1_cont_congestion_start_frac = congestion_start_frac
+        tier0_stress_mode = False
+        if tier == 0:
+            # Trigger enhanced tier-0 behavior only when pilot indicates
+            # simultaneous density/congestion stress or ambiguous branch race.
+            score_gap = abs(score_a - score_b)
+            base_use_edensity = score_b < score_a
+            if score_a <= score_b:
+                best_topk_norm = topk_a / topk_0
+                best_cong_norm = c_a / cl_0
+            else:
+                best_topk_norm = topk_b / topk_0
+                best_cong_norm = c_b / cl_0
+            dense_hotspot = best_topk_norm > 1.10
+            congestion_hotspot = best_cong_norm > 1.06
+            close_race = score_gap < 0.035
+            topk_under_congestion = (not base_use_edensity) and (best_cong_norm > 1.12)
+            tier0_stress_mode = topk_under_congestion or (
+                dense_hotspot and (congestion_hotspot or close_race)
+            )
+            if tier0_stress_mode:
+                hybrid_cw = 0.35
+                hybrid_dw = (1.0 - hybrid_cw) * 0.5
+                score_a = (
+                    wl_a / wl_0
+                    + hybrid_dw * topk_a / topk_0
+                    + hybrid_dw * edens_a / edens_0
+                    + hybrid_cw * c_a / cl_0
+                )
+                score_b = (
+                    wl_b / wl_0
+                    + hybrid_dw * topk_b / topk_0
+                    + hybrid_dw * edens_b / edens_0
+                    + hybrid_cw * c_b / cl_0
+                )
+                phase1_cont_congestion_start_frac = 0.52
+
+        use_edensity = score_b < score_a
+        winner = "eDensity" if use_edensity else "top-k"
+        if tier0_stress_mode:
+            winner += "+stress"
+        winner_pos = pos_b if use_edensity else pos_a
+        winner_fn = edens_fn if use_edensity else topk_fn
+        winner_norm = edens_0 if use_edensity else topk_0
+
+        remaining_iters = global_iters - pilot_iters
+        if self.verbose:
+            print(
+                f"  [{benchmark.name}] Winner: {winner} "
+                f"(A={score_a:.3f} B={score_b:.3f}). "
+                f"Phase 1: {remaining_iters} more iters",
+                flush=True,
+            )
+
+        pos_final = _run_phase1(
+            winner_pos,
+            port_pos,
+            net_idx,
+            net_mask,
+            sizes_halo,
+            fixed,
+            init,
+            nm,
+            nh,
+            gx,
+            gy,
+            bw,
+            bh,
+            cw,
+            ch,
+            diag,
+            lb,
+            ub,
+            winner_fn,
+            winner_norm,
+            wl_0,
+            cl_0,
+            remaining_iters,
+            lr_adapt * 0.5,
+            self.dw_s,
+            dw_e_adapt,
+            self.gamma_s,
+            gamma_e_adapt,
+            tier,
+            phase1_cont_congestion_start_frac,
+            dev,
+            dt,
+        )
+
+        if self.lbfgs_steps > 0:
+            if self.verbose:
+                print(
+                    f"  [{benchmark.name}] Phase 1b: L-BFGS ({self.lbfgs_steps} steps)",
+                    flush=True,
+                )
+            p_l = pos_final.clone().requires_grad_(True)
+            opt_lbfgs = torch.optim.LBFGS(
+                [p_l],
+                lr=0.9,
+                max_iter=self.lbfgs_max_iter,
+                history_size=min(100, 20 + self.lbfgs_steps * 3),
+                line_search_fn="strong_wolfe",
+            )
+            gamma_l = max(diag * gamma_e_adapt * 1.15, 0.06)
+            dw_l = dw_e_adapt * 0.82
+            cw_l = profile["lbfgs_congestion_weight"]
+            if tier0_stress_mode:
+                cw_l = 0.02
+
+            def _closure():
+                opt_lbfgs.zero_grad()
+                apos = torch.cat([p_l, port_pos], dim=0)
+                wl = _wa_wirelength(apos, net_idx, net_mask, gamma_l) / wl_0
+                dl = winner_fn(p_l) / winner_norm
+                cl = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma_l) / cl_0
+                lo = wl + dw_l * dl + cw_l * cl
+                lo.backward()
+                with torch.no_grad():
+                    p_l.grad[fixed] = 0.0
+                    p_l.grad[nh:] = 0.0
+                return lo
+
+            for _ in range(self.lbfgs_steps):
+                opt_lbfgs.step(_closure)
+                with torch.no_grad():
+                    p_l.data = torch.max(torch.min(p_l.data, ub), lb)
+                    p_l.data[fixed] = init[fixed]
+            pos_final = p_l.detach()
+
+        t1 = time.time()
+        if self.verbose:
+            print(f"  Phase 1 total: {t1 - t0:.1f}s", flush=True)
+
+        pos_legal = _legalize(pos_final, sizes_real, fixed, nh, cw, ch)
+
+        if nm > nh and soft_refine_iters > 0:
+            gamma_f = max(diag * gamma_e_adapt * 2, 0.1)
+            hw_r = sizes_real[:, 0] / 2
+            hh_r = sizes_real[:, 1] / 2
+            lb_r = torch.stack([hw_r, hh_r], dim=1)
+            ub_r = torch.stack([cw - hw_r, ch - hh_r], dim=1)
+
+            q = pos_legal.clone().requires_grad_(True)
+            opt2 = torch.optim.Adam([q], lr=lr_adapt * 0.3)
+            tier_cw = [0.05, 0.15, 0.25][tier]
+            cw3 = tier_cw * 0.5
+
+            for _ in range(soft_refine_iters):
+                opt2.zero_grad()
+                apos = torch.cat([q, port_pos], dim=0)
+                wl_s = _wa_wirelength(apos, net_idx, net_mask, gamma_f) / wl_0
+                dl_s = _density_topk(q, sizes_real, nm, gx, gy, bw, bh) / topk_0
+                cl_s = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma_f) / cl_0
+                loss_s = wl_s + dw_p3_adapt * dl_s + cw3 * cl_s
+                loss_s.backward()
+                with torch.no_grad():
+                    q.grad[:nh] = 0.0
+                    q.grad[fixed] = 0.0
+                opt2.step()
+                with torch.no_grad():
+                    q.data = torch.max(torch.min(q.data, ub_r), lb_r)
+                    q.data[:nh] = pos_legal[:nh]
+                    q.data[fixed] = init[fixed]
+            pos_legal = q.detach()
+
+        result = init.clone()
+        result[:] = pos_legal
+        if self.verbose:
+            print(f"  [{benchmark.name}] Total: {time.time() - t0:.1f}s", flush=True)
+        return result.cpu().float()
