@@ -183,6 +183,12 @@ def load_benchmark(
         soft_macro_indices=soft_macro_plc_indices,
     )
 
+    # Attach the PlacementCost evaluator to the benchmark so placers that
+    # opt in can gate their refinement on the actual TILOS proxy rather than
+    # an internal approximation. Stored as a private attr so dataclass
+    # equality and serialization aren't affected (.pt round-trips drop it).
+    benchmark._plc = plc  # type: ignore[attr-defined]
+
     return benchmark, plc
 
 

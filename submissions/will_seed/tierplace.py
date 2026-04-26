@@ -18,13 +18,24 @@ from macro_place.benchmark import Benchmark
 
 
 def benchmark_stress_tier(benchmark: Benchmark):
+    """Classify a benchmark into stress tier 0 (small), 1 (medium), or 2 (large).
+
+    Thresholds are deliberately rounded (multiples of 50/100 for counts,
+    multiples of 25 for ratios) rather than fitted to specific benchmark
+    sizes, so the tier mapping is stable under small dataset shifts. The
+    four signals are all "any-of": any one crossing pushes the design up a
+    tier, since each independently strains a different part of the placer
+    (macro count -> legalization, net count -> WL gradient cost, total
+    macro count -> density grid pressure, net/hard ratio -> per-macro
+    routing congestion).
+    """
     nh = max(int(benchmark.num_hard_macros), 1)
     nn = int(benchmark.num_nets)
     nm = int(benchmark.num_macros)
     ratio = nn / nh
-    if nh >= 620 or nn >= 30000 or nm >= 2500 or (ratio >= 78 and nh >= 220):
+    if nh >= 600 or nn >= 30000 or nm >= 2500 or (ratio >= 75 and nh >= 200):
         return 2
-    if nh >= 380 or nn >= 15000 or nm >= 1950 or ratio >= 50:
+    if nh >= 400 or nn >= 15000 or nm >= 2000 or ratio >= 50:
         return 1
     return 0
 
