@@ -1,40 +1,56 @@
-# GPU Analytical Macro Placer v6 — Pilot Race (top-k vs eDensity)
-# Key changes:
-#   1. FP32 on GPU (32x faster than FP64 on T4)
-#   2. Pilot race: run both density methods for 200 iters, pick winner
-#   3. Macro halos + L-BFGS + congestion from v4
-#   4. Target: <12 min total, best-of-both score
+"""TierPlace v4 — single-file analytical macro placer.
+
+Self-contained pipeline (no cross-file imports of earlier TierPlace
+versions):
+    1. Base place: uniform spread + pilot race (top-k vs eDensity) +
+       Phase-1 Adam + L-BFGS + legalization + soft-macro refine.
+    2. Joint polish: a WL + dw*density + cw*congestion gradient pass over
+       hard + soft macros, guarded by a pairwise hard-macro overlap
+       penalty and finished with a legalization step. Gated against the
+       real TILOS proxy when available.
+    3. Soft-only Adam polish on movable soft macros, gated against the
+       real TILOS proxy when available.
+
+Usage:
+    uv run evaluate submissions/will_seed/tierplacev4.py
+    uv run evaluate submissions/will_seed/tierplacev4.py --all
+"""
 
 from __future__ import annotations
-
 import math
 import time
-
 import numpy as np
 import torch
 import torch.nn.functional as F
-
 from macro_place.benchmark import Benchmark
+try:
+    from macro_place.objective import compute_proxy_cost as _compute_proxy_cost
+except Exception:
+    _compute_proxy_cost = None
 
 
-def benchmark_stress_tier(benchmark: Benchmark):
+# ---------------------------------------------------------------------------
+# v1 helpers (verbatim from tierplace.py)
+# ---------------------------------------------------------------------------
+
+_TIER_CW = (0.05, 0.15, 0.25)
+
+
+def benchmark_stress_tier(benchmark: Benchmark) -> int:
+    """Classify a benchmark into stress tier 0 (small), 1 (medium), or 2 (large)."""
     nh = max(int(benchmark.num_hard_macros), 1)
     nn = int(benchmark.num_nets)
     nm = int(benchmark.num_macros)
     ratio = nn / nh
-    if nh >= 620 or nn >= 30000 or nm >= 2500 or (ratio >= 78 and nh >= 220):
+    if nh >= 600 or nn >= 30000 or nm >= 2500 or (ratio >= 75 and nh >= 200):
         return 2
-    if nh >= 380 or nn >= 15000 or nm >= 1950 or ratio >= 50:
+    if nh >= 400 or nn >= 15000 or nm >= 2000 or ratio >= 50:
         return 1
     return 0
 
 
 def _phase_profile(tier: int, target_util: float):
-    """
-    Select optimization profile by stress tier.
-
-    This is intentionally benchmark-agnostic: only tier/utilization drive switches.
-    """
+    """Select optimization profile by stress tier."""
     match tier:
         case 0:
             return {
@@ -120,10 +136,12 @@ def _wa_wirelength(pos_all, net_idx, net_mask, gamma):
     sm_xn = F.softmax((-px).masked_fill(~net_mask, neg_inf) / gamma, dim=1)
     sm_yp = F.softmax(py.masked_fill(~net_mask, neg_inf) / gamma, dim=1)
     sm_yn = F.softmax((-py).masked_fill(~net_mask, neg_inf) / gamma, dim=1)
-    return ((px * sm_xp).sum(1) - (px * sm_xn).sum(1) + (py * sm_yp).sum(1) - (py * sm_yn).sum(1)).sum()
+    return (
+        (px * sm_xp).sum(1) - (px * sm_xn).sum(1)
+        + (py * sm_yp).sum(1) - (py * sm_yn).sum(1)
+    ).sum()
 
 
-# v2 density: top-k bin overlap (good on ibm01, ibm04, ibm09, ibm10, ibm12, ibm17, ibm18)
 def _density_topk(pos_all, sizes, nm, gx, gy, bw, bh):
     cx = pos_all[:nm, 0]
     cy = pos_all[:nm, 1]
@@ -146,7 +164,6 @@ def _density_topk(pos_all, sizes, nm, gx, gy, bw, bh):
     return 0.5 * top_k.mean()
 
 
-# v4 density: eDensity FFT Poisson (good on ibm02, ibm03, ibm06, ibm07, ibm08, ibm11, ibm13, ibm15, ibm16)
 def _density_edensity(pos_all, sizes, nm, gx, gy, bw, bh, target_util, K2_inv):
     cx = pos_all[:nm, 0]
     cy = pos_all[:nm, 1]
@@ -342,12 +359,11 @@ def _run_phase1(
         dl_n = density_fn(p) / density_norm
 
         if tier == 0 and abs(congestion_start_frac - 0.6) < 1e-9:
-            # Exact legacy ramp used by the original tier-0 behavior.
             ramp = max(0.0, (k - global_iters * 0.6) / (global_iters * 0.4))
         else:
             ramp_span = max(1e-6, 1.0 - congestion_start_frac)
             ramp = max(0.0, (frac - congestion_start_frac) / ramp_span)
-        tier_cw = [0.05, 0.15, 0.25][tier]
+        tier_cw = _TIER_CW[tier]
         cong_w = tier_cw * ramp
         if cong_w > 0:
             cl_n = _congestion_loss(all_pos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
@@ -370,25 +386,103 @@ def _run_phase1(
     return p.detach()
 
 
+# ---------------------------------------------------------------------------
+# v3 helpers (verbatim from tierplacev3.py)
+# ---------------------------------------------------------------------------
+
+def _build_pin_world_index(macro_pin_offsets, num_hard, dev, dt):
+    """Flatten per-macro pin offsets into (offsets[P,2], owner[P]) tensors."""
+    if num_hard <= 0 or not macro_pin_offsets:
+        return None, None
+    flat_off, flat_owner = [], []
+    for i in range(min(num_hard, len(macro_pin_offsets))):
+        off_i = macro_pin_offsets[i]
+        if off_i is None or off_i.numel() == 0:
+            continue
+        flat_off.append(off_i.to(device=dev, dtype=dt))
+        flat_owner.append(torch.full((off_i.shape[0],), i, dtype=torch.long, device=dev))
+    if not flat_off:
+        return None, None
+    return torch.cat(flat_off, dim=0), torch.cat(flat_owner, dim=0)
+
+
+def _pin_density_topk(pos_h, pin_offsets, pin_owner, gx, gy, bw, bh, top_frac=0.05):
+    """Top-K mean of soft hard-macro pin density on the routing grid."""
+    if pin_offsets is None or pin_offsets.shape[0] == 0:
+        return pos_h.sum() * 0.0
+    px = pos_h[pin_owner, 0] + pin_offsets[:, 0]
+    py = pos_h[pin_owner, 1] + pin_offsets[:, 1]
+    tau = max(bw, bh) * 0.3
+    sx = torch.sigmoid((px[:, None] - (gx - bw * 0.5)[None, :]) / tau) - torch.sigmoid(
+        (px[:, None] - (gx + bw * 0.5)[None, :]) / tau
+    )
+    sy = torch.sigmoid((py[:, None] - (gy - bh * 0.5)[None, :]) / tau) - torch.sigmoid(
+        (py[:, None] - (gy + bh * 0.5)[None, :]) / tau
+    )
+    density = sy.T @ sx
+    flat = density.reshape(-1)
+    k = max(1, int(flat.shape[0] * top_frac))
+    top, _ = torch.topk(flat, k, sorted=False)
+    return top.mean()
+
+
+def _pairwise_overlap_loss(pos_h, sizes_h, avg_macro_area):
+    """Sum of squared (overlap_area / avg_macro_area) over hard-macro pairs."""
+    nh = pos_h.shape[0]
+    if nh <= 1:
+        return pos_h.sum() * 0.0
+    dx = pos_h[:, 0:1] - pos_h[:, 0:1].T
+    dy = pos_h[:, 1:2] - pos_h[:, 1:2].T
+    sep_x = (sizes_h[:, 0:1] + sizes_h[:, 0:1].T) * 0.5
+    sep_y = (sizes_h[:, 1:2] + sizes_h[:, 1:2].T) * 0.5
+    over = torch.relu(sep_x - dx.abs()) * torch.relu(sep_y - dy.abs()) / max(avg_macro_area, 1e-12)
+    over = over.masked_fill(torch.eye(nh, dtype=torch.bool, device=over.device), 0.0)
+    return 0.5 * (over * over).sum()
+
+
+# ---------------------------------------------------------------------------
+# Consolidated AnalyticalPlacer (v1 base + v2 soft polish + v3 joint polish)
+# ---------------------------------------------------------------------------
+
+
 class AnalyticalPlacer:
+    """Analytical macro placer: base place -> joint polish -> soft Adam polish."""
+
     def __init__(
         self,
-        global_iters=800,
-        pilot_iters=200,
-        soft_refine_iters=250,
-        lr=0.3,
-        gamma_start_frac=0.08,
-        gamma_end_frac=0.003,
-        dw_start=0.005,
-        dw_end=5.0,
+        # v1 base placer
+        global_iters: int = 800,
+        pilot_iters: int = 200,
+        soft_refine_iters: int = 250,
+        lr: float = 0.3,
+        gamma_start_frac: float = 0.08,
+        gamma_end_frac: float = 0.003,
+        dw_start: float = 0.005,
+        dw_end: float = 5.0,
         dw_phase3=None,
-        seed=42,
-        verbose=True,
-        adaptive_hard=True,
-        lbfgs_steps=12,
-        lbfgs_max_iter=10,
-        halo_frac=0.08,
+        seed: int = 42,
+        verbose: bool = True,
+        adaptive_hard: bool = True,
+        lbfgs_steps: int = 12,
+        lbfgs_max_iter: int = 10,
+        halo_frac: float = 0.08,
+        # v2 soft-only polish (Adam)
+        soft_polish_iters: int = 80,
+        soft_polish_lr_scale: float = 0.15,
+        soft_polish_dw_scale: float = 0.8,
+        soft_polish_cw_scale: float = 1.2,
+        # v3 joint polish
+        joint_polish_iters: int = 120,
+        joint_polish_lr_scale: float = 0.05,
+        joint_polish_dw_scale: float = 0.6,
+        joint_polish_cw_scale: float = 1.0,
+        joint_overlap_weight: float = 1.0,
+        joint_pin_density_weight: float = 0.05,
+        gate_with_real_proxy: bool = True,
+        joint_legalize_gap: float = 0.05,
+        run_v2_soft_polish_after: bool = True,
     ):
+        # v1 params
         self.global_iters = global_iters
         self.pilot_iters = pilot_iters
         self.soft_refine_iters = soft_refine_iters
@@ -405,7 +499,28 @@ class AnalyticalPlacer:
         self.lbfgs_max_iter = lbfgs_max_iter
         self.halo_frac = halo_frac
 
-    def place(self, benchmark: Benchmark) -> torch.Tensor:
+        # v2 params
+        self.soft_polish_iters = soft_polish_iters
+        self.soft_polish_lr_scale = soft_polish_lr_scale
+        self.soft_polish_dw_scale = soft_polish_dw_scale
+        self.soft_polish_cw_scale = soft_polish_cw_scale
+
+        # v3 params
+        self.joint_polish_iters = joint_polish_iters
+        self.joint_polish_lr_scale = joint_polish_lr_scale
+        self.joint_polish_dw_scale = joint_polish_dw_scale
+        self.joint_polish_cw_scale = joint_polish_cw_scale
+        self.joint_overlap_weight = joint_overlap_weight
+        self.joint_pin_density_weight = joint_pin_density_weight
+        self.gate_with_real_proxy = gate_with_real_proxy
+        self.joint_legalize_gap = joint_legalize_gap
+        self.run_v2_soft_polish_after = run_v2_soft_polish_after
+
+    # ------------------------------------------------------------------
+    # v1 base place
+    # ------------------------------------------------------------------
+
+    def _place_base(self, benchmark: Benchmark) -> torch.Tensor:
         t0 = time.time()
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
@@ -426,7 +541,6 @@ class AnalyticalPlacer:
         pilot_iters = self.pilot_iters
         soft_refine_iters = self.soft_refine_iters
         lr_adapt = self.lr
-        dw_s_adapt = self.dw_s
         dw_e_adapt = self.dw_e
         dw_p3_adapt = self.dw_p3
         gamma_e_adapt = self.gamma_e
@@ -513,73 +627,19 @@ class AnalyticalPlacer:
             return _density_edensity(p, sizes_halo, nm, gx, gy, bw, bh, target_util, K2_inv)
 
         pos_a = _run_phase1(
-            pos,
-            port_pos,
-            net_idx,
-            net_mask,
-            sizes_halo,
-            fixed,
-            init,
-            nm,
-            nh,
-            gx,
-            gy,
-            bw,
-            bh,
-            cw,
-            ch,
-            diag,
-            lb,
-            ub,
-            topk_fn,
-            topk_0,
-            wl_0,
-            cl_0,
-            pilot_iters,
-            lr_adapt,
-            self.dw_s,
-            dw_e_adapt,
-            self.gamma_s,
-            gamma_e_adapt,
-            tier,
-            congestion_start_frac,
-            dev,
-            dt,
+            pos, port_pos, net_idx, net_mask, sizes_halo, fixed, init, nm, nh,
+            gx, gy, bw, bh, cw, ch, diag, lb, ub,
+            topk_fn, topk_0, wl_0, cl_0,
+            pilot_iters, lr_adapt, self.dw_s, dw_e_adapt,
+            self.gamma_s, gamma_e_adapt, tier, congestion_start_frac, dev, dt,
         )
 
         pos_b = _run_phase1(
-            pos,
-            port_pos,
-            net_idx,
-            net_mask,
-            sizes_halo,
-            fixed,
-            init,
-            nm,
-            nh,
-            gx,
-            gy,
-            bw,
-            bh,
-            cw,
-            ch,
-            diag,
-            lb,
-            ub,
-            edens_fn,
-            edens_0,
-            wl_0,
-            cl_0,
-            pilot_iters,
-            lr_adapt,
-            self.dw_s,
-            dw_e_adapt,
-            self.gamma_s,
-            gamma_e_adapt,
-            tier,
-            congestion_start_frac,
-            dev,
-            dt,
+            pos, port_pos, net_idx, net_mask, sizes_halo, fixed, init, nm, nh,
+            gx, gy, bw, bh, cw, ch, diag, lb, ub,
+            edens_fn, edens_0, wl_0, cl_0,
+            pilot_iters, lr_adapt, self.dw_s, dw_e_adapt,
+            self.gamma_s, gamma_e_adapt, tier, congestion_start_frac, dev, dt,
         )
 
         with torch.no_grad():
@@ -601,7 +661,6 @@ class AnalyticalPlacer:
             c_a = _congestion_loss(apos_a, net_idx, net_mask, gx, gy, bw, bh, gamma_eval).item()
             c_b = _congestion_loss(apos_b, net_idx, net_mask, gx, gy, bw, bh, gamma_eval).item()
             if tier == 0:
-                # Keep tier-0 winner selection identical to the original behavior.
                 score_a = wl_a / wl_0 + 0.5 * topk_a / topk_0 + 0.5 * c_a / cl_0
                 score_b = wl_b / wl_0 + 0.5 * topk_b / topk_0 + 0.5 * c_b / cl_0
             else:
@@ -623,8 +682,6 @@ class AnalyticalPlacer:
         phase1_cont_congestion_start_frac = congestion_start_frac
         tier0_stress_mode = False
         if tier == 0:
-            # Trigger enhanced tier-0 behavior only when pilot indicates
-            # simultaneous density/congestion stress or ambiguous branch race.
             score_gap = abs(score_a - score_b)
             base_use_edensity = score_b < score_a
             if score_a <= score_b:
@@ -675,38 +732,11 @@ class AnalyticalPlacer:
             )
 
         pos_final = _run_phase1(
-            winner_pos,
-            port_pos,
-            net_idx,
-            net_mask,
-            sizes_halo,
-            fixed,
-            init,
-            nm,
-            nh,
-            gx,
-            gy,
-            bw,
-            bh,
-            cw,
-            ch,
-            diag,
-            lb,
-            ub,
-            winner_fn,
-            winner_norm,
-            wl_0,
-            cl_0,
-            remaining_iters,
-            lr_adapt * 0.5,
-            self.dw_s,
-            dw_e_adapt,
-            self.gamma_s,
-            gamma_e_adapt,
-            tier,
-            phase1_cont_congestion_start_frac,
-            dev,
-            dt,
+            winner_pos, port_pos, net_idx, net_mask, sizes_halo, fixed, init, nm, nh,
+            gx, gy, bw, bh, cw, ch, diag, lb, ub,
+            winner_fn, winner_norm, wl_0, cl_0,
+            remaining_iters, lr_adapt * 0.5, self.dw_s, dw_e_adapt,
+            self.gamma_s, gamma_e_adapt, tier, phase1_cont_congestion_start_frac, dev, dt,
         )
 
         if self.lbfgs_steps > 0:
@@ -764,7 +794,7 @@ class AnalyticalPlacer:
 
             q = pos_legal.clone().requires_grad_(True)
             opt2 = torch.optim.Adam([q], lr=lr_adapt * 0.3)
-            tier_cw = [0.05, 0.15, 0.25][tier]
+            tier_cw = _TIER_CW[tier]
             cw3 = tier_cw * 0.5
 
             for _ in range(soft_refine_iters):
@@ -790,3 +820,282 @@ class AnalyticalPlacer:
         if self.verbose:
             print(f"  [{benchmark.name}] Total: {time.time() - t0:.1f}s", flush=True)
         return result.cpu().float()
+
+    # ------------------------------------------------------------------
+    # v2 soft-only Adam polish
+    # ------------------------------------------------------------------
+
+    def _soft_only_polish(self, placement: torch.Tensor, benchmark):
+        nh = benchmark.num_hard_macros
+        nm = benchmark.num_macros
+        if nm <= nh or self.soft_polish_iters <= 0:
+            return placement
+
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dt = torch.float32 if dev.type == "cuda" else torch.float64
+        placement = placement.to(dev, dt)
+
+        cw = float(benchmark.canvas_width)
+        ch = float(benchmark.canvas_height)
+        diag = math.hypot(cw, ch)
+        gr, gc = benchmark.grid_rows, benchmark.grid_cols
+        bw, bh = cw / gc, ch / gr
+
+        sizes = benchmark.macro_sizes.to(dev, dt)
+        fixed = benchmark.macro_fixed.to(dev)
+        # Skip when there is no movable soft macro to polish.
+        if (~fixed[nh:nm]).sum().item() == 0:
+            return placement
+
+        net_idx, net_mask, port_pos = _build_nets(benchmark, dev, dt)
+        if net_idx.shape[0] == 0:
+            return placement
+
+        gx = (torch.arange(gc, device=dev, dtype=dt) + 0.5) * bw
+        gy = (torch.arange(gr, device=dev, dtype=dt) + 0.5) * bh
+        gamma = max(diag * self.gamma_e * 1.5, 0.1)
+
+        with torch.no_grad():
+            apos0 = torch.cat([placement, port_pos], dim=0)
+            wl_0 = max(abs(_wa_wirelength(apos0, net_idx, net_mask, gamma).item()), 1.0)
+            den_0 = max(abs(_density_topk(placement, sizes, nm, gx, gy, bw, bh).item()), 1e-6)
+            cl_0 = max(abs(_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma).item()), 1e-6)
+
+        dw = self.dw_p3 * self.soft_polish_dw_scale
+        tier = benchmark_stress_tier(benchmark) if self.adaptive_hard else 0
+        cw_polish = _TIER_CW[tier] * 0.5 * self.soft_polish_cw_scale
+
+        hw = sizes[:, 0] / 2
+        hh = sizes[:, 1] / 2
+        lb = torch.stack([hw, hh], dim=1)
+        ub = torch.stack([cw - hw, ch - hh], dim=1)
+
+        def score(x: torch.Tensor) -> float:
+            with torch.no_grad():
+                apos = torch.cat([x, port_pos], dim=0)
+                wl = float((_wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0).item())
+                den = float((_density_topk(x, sizes, nm, gx, gy, bw, bh) / den_0).item())
+                cl = float((_congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0).item())
+                return wl + dw * den + cw_polish * cl
+
+        base_score = score(placement)
+
+        p = placement.clone().requires_grad_(True)
+        lr = max(1e-4, self.lr * self.soft_polish_lr_scale)
+        opt = torch.optim.Adam([p], lr=lr)
+
+        for _ in range(self.soft_polish_iters):
+            opt.zero_grad()
+            apos = torch.cat([p, port_pos], dim=0)
+            wl = _wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0
+            den = _density_topk(p, sizes, nm, gx, gy, bw, bh) / den_0
+            cl = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+            loss = wl + dw * den + cw_polish * cl
+            loss.backward()
+            with torch.no_grad():
+                p.grad[:nh] = 0.0
+                p.grad[fixed] = 0.0
+            opt.step()
+            with torch.no_grad():
+                p.data = torch.max(torch.min(p.data, ub), lb)
+                p.data[:nh] = placement[:nh]
+                p.data[fixed] = placement[fixed]
+        polished = p.detach()
+        polished_score = score(polished)
+
+        if self.verbose:
+            kept = polished_score <= base_score
+            print(
+                f"  [{benchmark.name}] Soft Adam: "
+                f"base={base_score:.4f} -> polished={polished_score:.4f} "
+                f"({'kept' if kept else 'reverted'})",
+                flush=True,
+            )
+
+        result = polished if polished_score <= base_score else placement
+        return result.cpu().float()
+
+    # ------------------------------------------------------------------
+    # v3 joint polish
+    # ------------------------------------------------------------------
+
+    def _real_proxy_score(self, placement: torch.Tensor, benchmark) -> float:
+        """Return TILOS proxy cost for ``placement``, or +inf if unavailable."""
+        if not self.gate_with_real_proxy or _compute_proxy_cost is None:
+            return float("inf")
+        plc = getattr(benchmark, "_plc", None)
+        if plc is None:
+            return float("inf")
+        try:
+            costs = _compute_proxy_cost(placement.detach().cpu().float(), benchmark, plc)
+            return float(costs["proxy_cost"])
+        except Exception:
+            return float("inf")
+
+    def _joint_polish(self, placement: torch.Tensor, benchmark) -> torch.Tensor:
+        nh = benchmark.num_hard_macros
+        nm = benchmark.num_macros
+        if self.joint_polish_iters <= 0:
+            return placement
+
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dt = torch.float32 if dev.type == "cuda" else torch.float64
+        placement = placement.to(dev, dt)
+
+        cw_can = float(benchmark.canvas_width)
+        ch_can = float(benchmark.canvas_height)
+        diag = math.hypot(cw_can, ch_can)
+        gr, gc = benchmark.grid_rows, benchmark.grid_cols
+        bw, bh = cw_can / gc, ch_can / gr
+
+        sizes = benchmark.macro_sizes.to(dev, dt)
+        fixed = benchmark.macro_fixed.to(dev)
+
+        net_idx, net_mask, port_pos = _build_nets(benchmark, dev, dt)
+        if net_idx.shape[0] == 0:
+            return placement
+
+        gx = (torch.arange(gc, device=dev, dtype=dt) + 0.5) * bw
+        gy = (torch.arange(gr, device=dev, dtype=dt) + 0.5) * bh
+        gamma = max(diag * self.gamma_e * 1.5, 0.1)
+
+        pin_offsets, pin_owner = _build_pin_world_index(
+            getattr(benchmark, "macro_pin_offsets", None) or [], nh, dev, dt,
+        )
+
+        with torch.no_grad():
+            apos0 = torch.cat([placement, port_pos], dim=0)
+            wl_0 = max(abs(_wa_wirelength(apos0, net_idx, net_mask, gamma).item()), 1.0)
+            den_0 = max(abs(_density_topk(placement, sizes, nm, gx, gy, bw, bh).item()), 1e-6)
+            cl_0 = max(abs(_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma).item()), 1e-6)
+            if pin_offsets is not None:
+                pd_0 = max(
+                    abs(_pin_density_topk(placement[:nh], pin_offsets, pin_owner, gx, gy, bw, bh).item()),
+                    1e-6,
+                )
+            else:
+                pd_0 = 1.0
+            avg_macro_area = max(
+                float((sizes[:nh, 0] * sizes[:nh, 1]).mean().item()) if nh > 0 else 1.0,
+                1e-6,
+            )
+
+        dw = self.dw_p3 * float(self.joint_polish_dw_scale)
+        tier = benchmark_stress_tier(benchmark) if self.adaptive_hard else 0
+        cw_joint = _TIER_CW[tier] * 0.5 * float(self.joint_polish_cw_scale)
+        over_w = float(self.joint_overlap_weight)
+        pd_w = float(self.joint_pin_density_weight)
+
+        hw, hh = sizes[:, 0] / 2, sizes[:, 1] / 2
+        lb = torch.stack([hw, hh], dim=1)
+        ub = torch.stack([cw_can - hw, ch_can - hh], dim=1)
+
+        def score(x: torch.Tensor) -> float:
+            with torch.no_grad():
+                apos = torch.cat([x, port_pos], dim=0)
+                wl = (_wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0).item()
+                den = (_density_topk(x, sizes, nm, gx, gy, bw, bh) / den_0).item()
+                cl = (_congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0).item()
+                return float(wl + dw * den + cw_joint * cl)
+
+        p = placement.clone().requires_grad_(True)
+        lr = max(1e-4, self.lr * float(self.joint_polish_lr_scale))
+        opt = torch.optim.Adam([p], lr=lr)
+
+        for _ in range(self.joint_polish_iters):
+            opt.zero_grad()
+            apos = torch.cat([p, port_pos], dim=0)
+            loss = (
+                _wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0
+                + dw * _density_topk(p, sizes, nm, gx, gy, bw, bh) / den_0
+                + cw_joint * _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+            )
+            if pd_w > 0.0 and pin_offsets is not None and nh >= 1:
+                loss = loss + pd_w * _pin_density_topk(p[:nh], pin_offsets, pin_owner, gx, gy, bw, bh) / pd_0
+            if over_w > 0.0 and nh >= 2:
+                loss = loss + over_w * _pairwise_overlap_loss(p[:nh], sizes[:nh], avg_macro_area)
+
+            loss.backward()
+            with torch.no_grad():
+                p.grad[fixed] = 0.0
+                torch.nn.utils.clip_grad_norm_([p], max_norm=diag * 0.5)
+            opt.step()
+            with torch.no_grad():
+                p.data = torch.max(torch.min(p.data, ub), lb)
+                p.data[fixed] = placement[fixed]
+
+        end_p = p.detach()
+
+        try:
+            legal_p = _legalize(
+                end_p, sizes, fixed, nh, cw_can, ch_can, gap=float(self.joint_legalize_gap)
+            )
+        except Exception:
+            legal_p = end_p
+
+        base_internal = score(placement)
+        end_internal = score(end_p)
+        legal_internal = score(legal_p)
+        base_real = self._real_proxy_score(placement, benchmark)
+        legal_real = self._real_proxy_score(legal_p, benchmark)
+
+        use_real = (
+            self.gate_with_real_proxy
+            and base_real != float("inf")
+            and legal_real != float("inf")
+        )
+        if use_real:
+            improved = legal_real < base_real - 1e-5
+        else:
+            improved = legal_internal < base_internal - 1e-5
+        result_p = legal_p if improved else placement
+        result_name = "legal" if improved else "base"
+
+        if self.verbose:
+            gate_tag = "real" if use_real else "internal"
+            real_tag = (
+                f" real_base={base_real:.4f} real_legal={legal_real:.4f}" if use_real else ""
+            )
+            print(
+                f"  [{benchmark.name}] Joint polish: tier={tier} "
+                f"base={base_internal:.4f} -> end={end_internal:.4f} "
+                f"legal={legal_internal:.4f}{real_tag} "
+                f"(gate={gate_tag} kept={result_name})",
+                flush=True,
+            )
+        return result_p
+
+    # ------------------------------------------------------------------
+    # Public entry point (v3 orchestration)
+    # ------------------------------------------------------------------
+
+    def place(self, benchmark: Benchmark) -> torch.Tensor:
+        base = self._place_base(benchmark)
+        polished = self._joint_polish(base, benchmark)
+
+        if self.run_v2_soft_polish_after:
+            pre_soft = polished
+            soft = self._soft_only_polish(pre_soft, benchmark)
+            pre_real = self._real_proxy_score(pre_soft, benchmark)
+            soft_real = self._real_proxy_score(soft, benchmark)
+            use_real = (
+                self.gate_with_real_proxy
+                and pre_real != float("inf")
+                and soft_real != float("inf")
+            )
+            if use_real:
+                kept_soft = soft_real < pre_real - 1e-5
+                polished = soft if kept_soft else pre_soft
+                if self.verbose:
+                    print(
+                        f"  [{benchmark.name}] Soft gate: "
+                        f"pre={pre_real:.4f} -> soft={soft_real:.4f} "
+                        f"(gate=real kept={'soft' if kept_soft else 'pre_soft'})",
+                        flush=True,
+                    )
+            else:
+                polished = soft
+
+        if isinstance(polished, torch.Tensor):
+            return polished.cpu().float()
+        return polished
