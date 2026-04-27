@@ -1,6 +1,10 @@
-(base) sanjaysenthil@MacBook-Pro-85 partcl-macro-place-challenge % uv run evaluate submissions/will_seed/tierplacev3.py --all
+source /Users/sanjaysenthil/partcl-macro-place-challenge/.venv/bin/activate
+(base) sanjaysenthil@MacBook-Pro-85 partcl-macro-place-challenge % source /Users/sanjaysenthil/partcl-macro-place-challenge/.venv/bin/act
+ivate
+(macro-place) (base) sanjaysenthil@MacBook-Pro-85 partcl-macro-place-challenge %     uv run evaluate submissions/will_seed/tierplace.py --all
+
 ================================================================================
-evaluate · AnalyticalPlacer  (submissions/will_seed/tierplacev3.py)
+evaluate · AnalyticalPlacer  (submissions/will_seed/tierplace.py)
 ================================================================================
 
   ibm01... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm01/netlist.pb.txt
@@ -9,275 +13,226 @@ evaluate · AnalyticalPlacer  (submissions/will_seed/tierplacev3.py)
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm01] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm01] Winner: eDensity (A=1.505 B=1.500). Phase 1: 600 more iters
-  [ibm01] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 10.2s
-  [ibm01] Total: 13.6s
-  [ibm01] Joint polish: tier=0 base=4.0250 -> end=3.8295 legal=3.8788 real_base=0.9517 real_legal=0.9376 (gate=real kept=legal)
-  [ibm01] Soft Adam: base=5.0300 -> polished=5.0024 (kept)
-  [ibm01] Soft gate: pre=0.9376 -> soft=0.9349 (gate=real kept=soft)
-proxy=0.9349  (wl=0.072 den=0.520 cong=1.206)  VALID  [19.87s]
+  [ibm01] seed halo=0.06 proxy=0.9113 (19.4s)
+  [ibm01] seed halo=0.08 proxy=0.9349 (19.0s)
+  [ibm01] seed halo=0.10 proxy=0.9059 (20.4s)
+  [ibm01] seed halo=0.12 proxy=0.9091 (19.6s)
+  [ibm01] ensemble best: halo=0.10 proxy=0.9059
+proxy=0.9059  (wl=0.073 den=0.502 cong=1.163)  VALID  [81.78s]
   ibm02... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm02/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 30, Row: 27
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm02] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm02] Winner: eDensity (A=1.976 B=1.953). Phase 1: 600 more iters
-  [ibm02] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 20.3s
-  [ibm02] Total: 27.9s
-  [ibm02] Joint polish: tier=0 base=4.0250 -> end=3.8962 legal=3.9221 real_base=1.4852 real_legal=1.4453 (gate=real kept=legal)
-  [ibm02] Soft Adam: base=5.0300 -> polished=5.0172 (kept)
-  [ibm02] Soft gate: pre=1.4453 -> soft=1.4536 (gate=real kept=pre_soft)
-proxy=1.4453  (wl=0.074 den=0.553 cong=2.191)  VALID  [43.34s]
+  [ibm02] seed halo=0.06 proxy=1.4522 (39.3s)
+  [ibm02] seed halo=0.08 proxy=1.4453 (39.7s)
+  [ibm02] seed halo=0.10 proxy=1.5229 (45.9s)
+  [ibm02] seed halo=0.12 proxy=1.3982 (41.1s)
+  [ibm02] ensemble best: halo=0.12 proxy=1.3982
+proxy=1.3982  (wl=0.072 den=0.586 cong=2.066)  VALID  [174.93s]
   ibm03... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm03/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 32, Row: 29
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm03] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm03] Winner: eDensity (A=1.668 B=1.632). Phase 1: 600 more iters
-  [ibm03] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 13.7s
-  [ibm03] Total: 18.2s
-  [ibm03] Joint polish: tier=0 base=4.0250 -> end=3.8839 legal=3.9134 real_base=1.2384 real_legal=1.2178 (gate=real kept=legal)
-  [ibm03] Soft Adam: base=5.0300 -> polished=5.0035 (kept)
-  [ibm03] Soft gate: pre=1.2178 -> soft=1.2122 (gate=real kept=soft)
-proxy=1.2122  (wl=0.080 den=0.524 cong=1.742)  VALID  [27.95s]
+  [ibm03] seed halo=0.06 proxy=1.2206 (23.9s)
+  [ibm03] seed halo=0.08 proxy=1.2122 (23.7s)
+  [ibm03] seed halo=0.10 proxy=1.2033 (24.2s)
+  [ibm03] seed halo=0.12 proxy=1.2209 (23.6s)
+  [ibm03] ensemble best: halo=0.10 proxy=1.2033
+proxy=1.2033  (wl=0.080 den=0.505 cong=1.741)  VALID  [101.20s]
   ibm04... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm04/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 31, Row: 30
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm04] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm04] Winner: eDensity+stress (A=1.517 B=1.471). Phase 1: 600 more iters
-  [ibm04] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 21.9s
-  [ibm04] Total: 29.2s
-  [ibm04] Joint polish: tier=0 base=4.0250 -> end=3.8103 legal=3.8596 real_base=1.2413 real_legal=1.2203 (gate=real kept=legal)
-  [ibm04] Soft Adam: base=5.0300 -> polished=5.0140 (kept)
-  [ibm04] Soft gate: pre=1.2203 -> soft=1.2319 (gate=real kept=pre_soft)
-proxy=1.2203  (wl=0.076 den=0.536 cong=1.753)  VALID  [42.93s]
+  [ibm04] seed halo=0.06 proxy=1.2463 (40.8s)
+  [ibm04] seed halo=0.08 proxy=1.2203 (39.6s)
+  [ibm04] seed halo=0.10 proxy=1.2585 (39.9s)
+  [ibm04] seed halo=0.12 proxy=1.2283 (39.6s)
+  [ibm04] ensemble best: halo=0.08 proxy=1.2203
+proxy=1.2203  (wl=0.076 den=0.536 cong=1.753)  VALID  [167.84s]
   ibm06... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm06/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 31, Row: 28
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm06] Pilot race: 200 iters each, tier=1 halo=0.08
-  [ibm06] Winner: eDensity (A=1.804 B=1.708). Phase 1: 712 more iters
-  [ibm06] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 18.8s
-  [ibm06] Total: 24.9s
-  [ibm06] Joint polish: tier=1 base=4.0750 -> end=3.9181 legal=3.9535 real_base=1.5329 real_legal=1.5204 (gate=real kept=legal)
-  [ibm06] Soft Adam: base=5.0900 -> polished=5.0987 (reverted)
-  [ibm06] Soft gate: pre=1.5204 -> soft=1.5204 (gate=real kept=pre_soft)
-proxy=1.5204  (wl=0.064 den=0.508 cong=2.405)  VALID  [38.79s]
+  [ibm06] seed halo=0.06 proxy=1.5268 (38.6s)
+  [ibm06] seed halo=0.08 proxy=1.5204 (38.7s)
+  [ibm06] seed halo=0.10 proxy=1.5255 (38.9s)
+  [ibm06] seed halo=0.12 proxy=1.5158 (38.8s)
+  [ibm06] ensemble best: halo=0.12 proxy=1.5158
+proxy=1.5158  (wl=0.064 den=0.506 cong=2.398)  VALID  [164.60s]
   ibm07... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm07/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 35, Row: 32
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm07] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm07] Winner: eDensity+stress (A=1.618 B=1.568). Phase 1: 600 more iters
-  [ibm07] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 13.3s
-  [ibm07] Total: 17.8s
-  [ibm07] Joint polish: tier=0 base=4.0250 -> end=3.9174 legal=3.9191 real_base=1.3321 real_legal=1.3284 (gate=real kept=legal)
-  [ibm07] Soft Adam: base=5.0300 -> polished=5.0397 (reverted)
-  [ibm07] Soft gate: pre=1.3284 -> soft=1.3284 (gate=real kept=pre_soft)
-proxy=1.3284  (wl=0.067 den=0.508 cong=2.015)  VALID  [37.84s]
+  [ibm07] seed halo=0.06 proxy=1.3268 (37.4s)
+  [ibm07] seed halo=0.08 proxy=1.3284 (38.2s)
+  [ibm07] seed halo=0.10 proxy=1.3267 (38.1s)
+  [ibm07] seed halo=0.12 proxy=1.3214 (38.3s)
+  [ibm07] ensemble best: halo=0.12 proxy=1.3214
+proxy=1.3214  (wl=0.067 den=0.511 cong=1.998)  VALID  [168.10s]
   ibm08... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm08/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 38, Row: 34
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm08] Pilot race: 200 iters each, tier=1 halo=0.08
-  [ibm08] Winner: eDensity (A=1.836 B=1.502). Phase 1: 712 more iters
-  [ibm08] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 35.6s
-  [ibm08] Total: 48.1s
-  [ibm08] Joint polish: tier=1 base=4.0750 -> end=3.8803 legal=3.9116 real_base=1.4761 real_legal=1.4458 (gate=real kept=legal)
-  [ibm08] Soft Adam: base=5.0900 -> polished=5.0720 (kept)
-  [ibm08] Soft gate: pre=1.4458 -> soft=1.4642 (gate=real kept=pre_soft)
-proxy=1.4458  (wl=0.073 den=0.595 cong=2.151)  VALID  [75.95s]
+  [ibm08] seed halo=0.06 proxy=1.4258 (74.8s)
+  [ibm08] seed halo=0.08 proxy=1.4458 (76.8s)
+  [ibm08] seed halo=0.10 proxy=1.3836 (76.3s)
+  [ibm08] seed halo=0.12 proxy=1.4265 (76.2s)
+  [ibm08] ensemble best: halo=0.10 proxy=1.3836
+proxy=1.3836  (wl=0.073 den=0.541 cong=2.080)  VALID  [323.29s]
   ibm09... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm09/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 36, Row: 38
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm09] Pilot race: 200 iters each, tier=0 halo=0.08
-  [ibm09] Winner: eDensity+stress (A=1.488 B=1.404). Phase 1: 600 more iters
-  [ibm09] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 20.7s
-  [ibm09] Total: 27.4s
-  [ibm09] Joint polish: tier=0 base=4.0250 -> end=3.8432 legal=3.8460 real_base=0.9825 real_legal=0.9581 (gate=real kept=legal)
-  [ibm09] Soft Adam: base=5.0300 -> polished=4.9894 (kept)
-  [ibm09] Soft gate: pre=0.9581 -> soft=0.9651 (gate=real kept=pre_soft)
-proxy=0.9581  (wl=0.059 den=0.534 cong=1.265)  VALID  [45.91s]
+  [ibm09] seed halo=0.06 proxy=0.9580 (44.3s)
+  [ibm09] seed halo=0.08 proxy=0.9581 (44.9s)
+  [ibm09] seed halo=0.10 proxy=0.9644 (44.3s)
+  [ibm09] seed halo=0.12 proxy=0.9618 (45.5s)
+  [ibm09] ensemble best: halo=0.06 proxy=0.9580
+proxy=0.9580  (wl=0.059 den=0.534 cong=1.264)  VALID  [191.70s]
   ibm10... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm10/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 55, Row: 41
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm10] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm10] Winner: eDensity (A=1.555 B=1.220). Phase 1: 888 more iters
-  [ibm10] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 51.0s
-  [ibm10] Total: 69.5s
-  [ibm10] Joint polish: tier=2 base=4.1250 -> end=3.9409 legal=3.9575 real_base=1.3087 real_legal=1.2825 (gate=real kept=legal)
-  [ibm10] Soft Adam: base=5.1500 -> polished=5.1197 (kept)
-  [ibm10] Soft gate: pre=1.2825 -> soft=1.2858 (gate=real kept=pre_soft)
-proxy=1.2825  (wl=0.056 den=0.539 cong=1.914)  VALID  [146.87s]
+  [ibm10] seed halo=0.06 proxy=1.3067 (167.9s)
+  [ibm10] seed halo=0.08 proxy=1.2825 (156.6s)
+  [ibm10] seed halo=0.10 proxy=1.3015 (161.0s)
+  [ibm10] seed halo=0.12 proxy=1.2895 (160.6s)
+  [ibm10] ensemble best: halo=0.08 proxy=1.2825
+proxy=1.2825  (wl=0.056 den=0.539 cong=1.914)  VALID  [714.55s]
   ibm11... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm11/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 39, Row: 45
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm11] Pilot race: 200 iters each, tier=1 halo=0.08
-  [ibm11] Winner: eDensity (A=2.307 B=1.609). Phase 1: 712 more iters
-  [ibm11] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 21.8s
-  [ibm11] Total: 29.9s
-  [ibm11] Joint polish: tier=1 base=4.0750 -> end=4.0235 legal=4.0279 real_base=1.0488 real_legal=1.0432 (gate=real kept=legal)
-  [ibm11] Soft Adam: base=5.0900 -> polished=5.0886 (kept)
-  [ibm11] Soft gate: pre=1.0432 -> soft=1.0378 (gate=real kept=soft)
-proxy=1.0378  (wl=0.058 den=0.501 cong=1.459)  VALID  [56.00s]
+  [ibm11] seed halo=0.06 proxy=1.0347 (63.4s)
+  [ibm11] seed halo=0.08 proxy=1.0378 (63.1s)
+  [ibm11] seed halo=0.10 proxy=1.0390 (65.9s)
+  [ibm11] seed halo=0.12 proxy=1.0352 (67.8s)
+  [ibm11] ensemble best: halo=0.06 proxy=1.0347
+proxy=1.0347  (wl=0.058 den=0.502 cong=1.451)  VALID  [281.63s]
   ibm12... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm12/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 47, Row: 47
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm12] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm12] Winner: eDensity (A=1.504 B=1.295). Phase 1: 888 more iters
-  [ibm12] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 52.4s
-  [ibm12] Total: 70.8s
-  [ibm12] Joint polish: tier=2 base=4.1250 -> end=4.0230 legal=4.0345 real_base=1.5453 real_legal=1.5418 (gate=real kept=legal)
-  [ibm12] Soft Adam: base=5.1500 -> polished=5.1456 (kept)
-  [ibm12] Soft gate: pre=1.5418 -> soft=1.5408 (gate=real kept=soft)
-proxy=1.5408  (wl=0.063 den=0.527 cong=2.429)  VALID  [151.11s]
+  [ibm12] seed halo=0.06 proxy=1.5293 (150.8s)
+  [ibm12] seed halo=0.08 proxy=1.5408 (147.1s)
+  [ibm12] seed halo=0.10 proxy=1.5407 (147.6s)
+  [ibm12] seed halo=0.12 proxy=1.5388 (145.0s)
+  [ibm12] ensemble best: halo=0.06 proxy=1.5293
+proxy=1.5293  (wl=0.064 den=0.516 cong=2.415)  VALID  [658.65s]
   ibm13... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm13/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 43, Row: 43
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm13] Pilot race: 200 iters each, tier=1 halo=0.08
-  [ibm13] Winner: eDensity (A=1.924 B=1.532). Phase 1: 712 more iters
-  [ibm13] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 36.2s
-  [ibm13] Total: 48.2s
-  [ibm13] Joint polish: tier=1 base=4.0750 -> end=3.8544 legal=3.8670 real_base=1.2089 real_legal=1.1812 (gate=real kept=legal)
-  [ibm13] Soft Adam: base=5.0900 -> polished=5.0775 (kept)
-  [ibm13] Soft gate: pre=1.1812 -> soft=1.1823 (gate=real kept=pre_soft)
-proxy=1.1812  (wl=0.057 den=0.516 cong=1.732)  VALID  [82.91s]
+  [ibm13] seed halo=0.06 proxy=1.1745 (84.8s)
+  [ibm13] seed halo=0.08 proxy=1.1812 (87.0s)
+  [ibm13] seed halo=0.10 proxy=1.1907 (87.2s)
+  [ibm13] seed halo=0.12 proxy=1.1868 (88.5s)
+  [ibm13] ensemble best: halo=0.06 proxy=1.1745
+proxy=1.1745  (wl=0.058 den=0.506 cong=1.727)  VALID  [373.41s]
   ibm14... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm14/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 49, Row: 44
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm14] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm14] Winner: eDensity (A=1.767 B=1.326). Phase 1: 888 more iters
-  [ibm14] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 58.1s
-  [ibm14] Total: 78.7s
-  [ibm14] Joint polish: tier=2 base=4.1250 -> end=3.9917 legal=3.9990 real_base=1.3860 real_legal=1.3732 (gate=real kept=legal)
-  [ibm14] Soft Adam: base=5.1500 -> polished=5.1719 (reverted)
-  [ibm14] Soft gate: pre=1.3732 -> soft=1.3732 (gate=real kept=pre_soft)
-proxy=1.3732  (wl=0.058 den=0.508 cong=2.123)  VALID  [177.57s]
+  [ibm14] seed halo=0.06 proxy=1.3733 (185.0s)
+  [ibm14] seed halo=0.08 proxy=1.3732 (184.7s)
+  [ibm14] seed halo=0.10 proxy=1.3620 (186.3s)
+  [ibm14] seed halo=0.12 proxy=1.3808 (185.1s)
+  [ibm14] ensemble best: halo=0.10 proxy=1.3620
+proxy=1.3620  (wl=0.058 den=0.514 cong=2.094)  VALID  [827.36s]
   ibm15... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm15/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 57, Row: 38
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm15] Pilot race: 200 iters each, tier=1 halo=0.08
-  [ibm15] Winner: eDensity (A=2.052 B=1.697). Phase 1: 712 more iters
-  [ibm15] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 37.4s
-  [ibm15] Total: 50.8s
-  [ibm15] Joint polish: tier=1 base=4.0750 -> end=3.8852 legal=3.8910 real_base=1.4606 real_legal=1.4451 (gate=real kept=legal)
-  [ibm15] Soft Adam: base=5.0900 -> polished=5.0643 (kept)
-  [ibm15] Soft gate: pre=1.4451 -> soft=1.4394 (gate=real kept=soft)
-proxy=1.4394  (wl=0.063 den=0.574 cong=2.179)  VALID  [111.00s]
+  [ibm15] seed halo=0.06 proxy=1.4334 (119.4s)
+  [ibm15] seed halo=0.08 proxy=1.4394 (117.5s)
+  [ibm15] seed halo=0.10 proxy=1.4214 (117.2s)
+  [ibm15] seed halo=0.12 proxy=1.3997 (111.7s)
+  [ibm15] ensemble best: halo=0.12 proxy=1.3997
+proxy=1.3997  (wl=0.063 den=0.541 cong=2.132)  VALID  [517.16s]
   ibm16... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm16/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 45, Row: 48
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm16] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm16] Winner: eDensity (A=1.835 B=1.488). Phase 1: 888 more iters
-  [ibm16] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 72.6s
-  [ibm16] Total: 97.4s
-  [ibm16] Joint polish: tier=2 base=4.1250 -> end=3.9427 legal=3.9585 real_base=1.3581 real_legal=1.3411 (gate=real kept=legal)
-  [ibm16] Soft Adam: base=5.1500 -> polished=5.1333 (kept)
-  [ibm16] Soft gate: pre=1.3411 -> soft=1.3392 (gate=real kept=soft)
-proxy=1.3392  (wl=0.052 den=0.531 cong=2.043)  VALID  [214.94s]
+  [ibm16] seed halo=0.06 proxy=1.3353 (221.1s)
+  [ibm16] seed halo=0.08 proxy=1.3392 (218.9s)
+  [ibm16] seed halo=0.10 proxy=1.3178 (220.1s)
+  [ibm16] seed halo=0.12 proxy=1.3440 (222.8s)
+  [ibm16] ensemble best: halo=0.10 proxy=1.3178
+proxy=1.3178  (wl=0.052 den=0.523 cong=2.008)  VALID  [987.01s]
   ibm17... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm17/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 51, Row: 44
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm17] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm17] Winner: eDensity (A=2.052 B=1.641). Phase 1: 888 more iters
-  [ibm17] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 79.0s
-  [ibm17] Total: 109.6s
-  [ibm17] Joint polish: tier=2 base=4.1250 -> end=4.0433 legal=4.0437 real_base=1.5519 real_legal=1.5467 (gate=real kept=legal)
-  [ibm17] Soft Adam: base=5.1500 -> polished=5.1797 (reverted)
-  [ibm17] Soft gate: pre=1.5467 -> soft=1.5467 (gate=real kept=pre_soft)
-proxy=1.5467  (wl=0.058 den=0.499 cong=2.479)  VALID  [297.24s]
+  [ibm17] seed halo=0.06 proxy=1.5370 (304.2s)
+  [ibm17] seed halo=0.08 proxy=1.5467 (299.3s)
+  [ibm17] seed halo=0.10 proxy=1.5298 (297.6s)
+  [ibm17] seed halo=0.12 proxy=1.5368 (301.7s)
+  [ibm17] ensemble best: halo=0.10 proxy=1.5298
+proxy=1.5298  (wl=0.058 den=0.502 cong=2.442)  VALID  [1371.02s]
   ibm18... #[INFO] Reading from external/MacroPlacement/Testcases/ICCAD04/ibm18/netlist.pb.txt
 [INFO] Retrieving Meta information from .plc comments
 #[PLACEMENT GRID] Col: 55, Row: 39
 #[ROUTES PER MICRON] Hor: 65.96, Ver: 106.96
 #[CONGESTION SMOOTH RANGE] Smooth Range: 2
 #[OVERLAP THRESHOLD] Threshold: 0.0040
-  [ibm18] Pilot race: 200 iters each, tier=2 halo=0.08
-  [ibm18] Winner: eDensity (A=2.304 B=2.013). Phase 1: 888 more iters
-  [ibm18] Phase 1b: L-BFGS (12 steps)
-  Phase 1 total: 51.2s
-  [ibm18] Total: 69.2s
-  [ibm18] Joint polish: tier=2 base=4.1250 -> end=4.0460 legal=4.0462 real_base=1.6406 real_legal=1.6276 (gate=real kept=legal)
-  [ibm18] Soft Adam: base=5.1500 -> polished=5.1451 (kept)
-  [ibm18] Soft gate: pre=1.6276 -> soft=1.6214 (gate=real kept=soft)
-proxy=1.6214  (wl=0.060 den=0.536 cong=2.586)  VALID  [137.38s]
+  [ibm18] seed halo=0.06 proxy=1.6171 (136.4s)
+  [ibm18] seed halo=0.08 proxy=1.6214 (137.6s)
+  [ibm18] seed halo=0.10 proxy=1.6097 (136.9s)
+  [ibm18] seed halo=0.12 proxy=1.6190 (136.5s)
+  [ibm18] ensemble best: halo=0.10 proxy=1.6097
+proxy=1.6097  (wl=0.060 den=0.537 cong=2.563)  VALID  [605.07s]
 
 --------------------------------------------------------------------------------
     Benchmark     Proxy        SA   RePlAce     vs SA  vs RePlAce  Overlaps
 --------------------------------------------------------------------------------
-        ibm01    0.9349    1.3166    0.9976    +29.0%       +6.3%         0
-        ibm02    1.4453    1.9072    1.8370    +24.2%      +21.3%         0
-        ibm03    1.2122    1.7401    1.3222    +30.3%       +8.3%         0
+        ibm01    0.9059    1.3166    0.9976    +31.2%       +9.2%         0
+        ibm02    1.3982    1.9072    1.8370    +26.7%      +23.9%         0
+        ibm03    1.2033    1.7401    1.3222    +30.8%       +9.0%         0
         ibm04    1.2203    1.5037    1.3024    +18.8%       +6.3%         0
-        ibm06    1.5204    2.5057    1.6187    +39.3%       +6.1%         0
-        ibm07    1.3284    2.0229    1.4633    +34.3%       +9.2%         0
-        ibm08    1.4458    1.9239    1.4285    +24.8%       -1.2%         0
-        ibm09    0.9581    1.3875    1.1194    +30.9%      +14.4%         0
+        ibm06    1.5158    2.5057    1.6187    +39.5%       +6.4%         0
+        ibm07    1.3214    2.0229    1.4633    +34.7%       +9.7%         0
+        ibm08    1.3836    1.9239    1.4285    +28.1%       +3.1%         0
+        ibm09    0.9580    1.3875    1.1194    +31.0%      +14.4%         0
         ibm10    1.2825    2.1108    1.5009    +39.2%      +14.5%         0
-        ibm11    1.0378    1.7111    1.1774    +39.4%      +11.9%         0
-        ibm12    1.5408    2.8261    1.7261    +45.5%      +10.7%         0
-        ibm13    1.1812    1.9141    1.3355    +38.3%      +11.6%         0
-        ibm14    1.3732    2.2750    1.5436    +39.6%      +11.0%         0
-        ibm15    1.4394    2.3000    1.5159    +37.4%       +5.0%         0
-        ibm16    1.3392    2.2337    1.4780    +40.0%       +9.4%         0
-        ibm17    1.5467    3.6726    1.6446    +57.9%       +6.0%         0
-        ibm18    1.6214    2.7755    1.7722    +41.6%       +8.5%         0
+        ibm11    1.0347    1.7111    1.1774    +39.5%      +12.1%         0
+        ibm12    1.5293    2.8261    1.7261    +45.9%      +11.4%         0
+        ibm13    1.1745    1.9141    1.3355    +38.6%      +12.1%         0
+        ibm14    1.3620    2.2750    1.5436    +40.1%      +11.8%         0
+        ibm15    1.3997    2.3000    1.5159    +39.1%       +7.7%         0
+        ibm16    1.3178    2.2337    1.4780    +41.0%      +10.8%         0
+        ibm17    1.5298    3.6726    1.6446    +58.3%       +7.0%         0
+        ibm18    1.6097    2.7755    1.7722    +42.0%       +9.2%         0
 --------------------------------------------------------------------------------
-          AVG    1.3193    2.1251    1.4578    +37.9%       +9.5%         0
+          AVG    1.3027    2.1251    1.4578    +38.7%      +10.6%         0
+
+Total runtime: 7709.31s
