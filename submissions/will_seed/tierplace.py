@@ -1,4 +1,4 @@
-"""TierPlace  — single-file analytical macro placer.
+"""TierPlace v4 — single-file analytical macro placer.
 
 Self-contained pipeline (no cross-file imports of earlier TierPlace
 versions):
@@ -10,20 +10,15 @@ versions):
        real TILOS proxy when available.
     3. Soft-only Adam polish on movable soft macros, gated against the
        real TILOS proxy when available.
-    4. Multi-start ensemble: the pipeline above is run once per halo in
-       ``ensemble_halos``; the placement with the lowest TILOS proxy is
-       returned.
 
 Usage:
-    uv run evaluate submissions/will_seed/tierplace.py
-    uv run evaluate submissions/will_seed/tierplace.py --all
+    uv run evaluate submissions/will_seed/tierplacev4.py
+    uv run evaluate submissions/will_seed/tierplacev4.py --all
 """
 
 from __future__ import annotations
-import io
 import math
 import time
-import contextlib
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -32,55 +27,6 @@ try:
     from macro_place.objective import compute_proxy_cost as _compute_proxy_cost
 except Exception:
     _compute_proxy_cost = None
-
-
-# ---------------------------------------------------------------------------
-# Attach the TILOS PlacementCost evaluator to each benchmark on load so the
-# refinement stages can gate against the real proxy. We wrap
-# ``macro_place.loader.load_benchmark`` from inside this submission file --
-# no edits to the upstream harness. The patch is idempotent and silently
-# no-ops if the harness module layout changes.
-#
-# We also redirect stdout during load_benchmark so the TILOS PlacementCost
-# parser's ``#[INFO]`` / ``#[PLACEMENT GRID]`` chatter doesn't pollute the
-# evaluation output (the parser writes directly to stdout from C-level).
-# ---------------------------------------------------------------------------
-def _install_plc_attach_patch() -> None:
-    try:
-        import macro_place.loader as _loader_mod
-    except Exception:
-        return
-
-    orig = getattr(_loader_mod, "load_benchmark", None)
-    if orig is None or getattr(orig, "_attaches_plc", False):
-        return
-
-    def _load_benchmark_with_plc(*args, **kwargs):
-        with contextlib.redirect_stdout(io.StringIO()):
-            benchmark, plc = orig(*args, **kwargs)
-        try:
-            benchmark._plc = plc
-        except Exception:
-            pass
-        return benchmark, plc
-
-    _load_benchmark_with_plc._attaches_plc = True  # type: ignore[attr-defined]
-    _loader_mod.load_benchmark = _load_benchmark_with_plc
-
-    # Re-bind the symbol in any module that pulled it via ``from ... import``
-    # before this patch ran (notably ``macro_place.evaluate``).
-    try:
-        import sys
-        for mod in list(sys.modules.values()):
-            if mod is None or mod is _loader_mod:
-                continue
-            if getattr(mod, "load_benchmark", None) is orig:
-                setattr(mod, "load_benchmark", _load_benchmark_with_plc)
-    except Exception:
-        pass
-
-
-_install_plc_attach_patch()
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +461,7 @@ class AnalyticalPlacer:
         dw_end: float = 5.0,
         dw_phase3=None,
         seed: int = 42,
-        verbose: bool = False,
+        verbose: bool = True,
         adaptive_hard: bool = True,
         lbfgs_steps: int = 12,
         lbfgs_max_iter: int = 10,
@@ -535,9 +481,6 @@ class AnalyticalPlacer:
         gate_with_real_proxy: bool = True,
         joint_legalize_gap: float = 0.05,
         run_v2_soft_polish_after: bool = True,
-        # v4 multi-start ensemble (Sprint 1 step A)
-        ensemble_halos=(0.06, 0.08, 0.10, 0.12),
-        ensemble_summary: bool = True,
     ):
         # v1 params
         self.global_iters = global_iters
@@ -572,10 +515,6 @@ class AnalyticalPlacer:
         self.gate_with_real_proxy = gate_with_real_proxy
         self.joint_legalize_gap = joint_legalize_gap
         self.run_v2_soft_polish_after = run_v2_soft_polish_after
-
-        # v4 ensemble params
-        self.ensemble_halos = tuple(ensemble_halos) if ensemble_halos else (halo_frac,)
-        self.ensemble_summary = ensemble_summary
 
     # ------------------------------------------------------------------
     # v1 base place
@@ -1127,10 +1066,10 @@ class AnalyticalPlacer:
         return result_p
 
     # ------------------------------------------------------------------
-    # v3 single-seed orchestration (base -> joint polish -> soft polish)
+    # Public entry point (v3 orchestration)
     # ------------------------------------------------------------------
 
-    def _place_single(self, benchmark: Benchmark) -> torch.Tensor:
+    def place(self, benchmark: Benchmark) -> torch.Tensor:
         base = self._place_base(benchmark)
         polished = self._joint_polish(base, benchmark)
 
@@ -1160,73 +1099,3 @@ class AnalyticalPlacer:
         if isinstance(polished, torch.Tensor):
             return polished.cpu().float()
         return polished
-
-    # ------------------------------------------------------------------
-    # v4 multi-start ensemble: run the v3 pipeline once per halo and keep
-    # the placement with the lowest real TILOS proxy.
-    # ------------------------------------------------------------------
-
-    def place(self, benchmark: Benchmark) -> torch.Tensor:
-        halos = self.ensemble_halos or (self.halo_frac,)
-
-        # The harness prints ``  <name>... `` with end=" " (no newline) before
-        # calling place(). Drop a newline so our seed lines start on a fresh
-        # line instead of trailing the harness prefix.
-        if self.ensemble_summary:
-            print(flush=True)
-
-        if len(halos) <= 1:
-            saved = self.halo_frac
-            self.halo_frac = halos[0]
-            try:
-                placement = self._place_single(benchmark)
-            finally:
-                self.halo_frac = saved
-            if self.ensemble_summary:
-                print(flush=True)
-            return placement
-
-        saved_halo = self.halo_frac
-        seed_results: list[tuple[float, float, torch.Tensor]] = []
-        try:
-            for halo in halos:
-                self.halo_frac = halo
-                t0 = time.time()
-                placement = self._place_single(benchmark)
-                runtime = time.time() - t0
-                real = self._real_proxy_score(placement, benchmark)
-                seed_results.append((real, runtime, placement))
-                if self.ensemble_summary:
-                    real_str = f"{real:.4f}" if real != float("inf") else "n/a"
-                    print(
-                        f"  [{benchmark.name}] seed halo={halo:.2f} "
-                        f"proxy={real_str} ({runtime:.1f}s)",
-                        flush=True,
-                    )
-        finally:
-            self.halo_frac = saved_halo
-
-        scored = [
-            (i, r[0]) for i, r in enumerate(seed_results) if r[0] != float("inf")
-        ]
-        if scored:
-            best_idx = min(scored, key=lambda t: t[1])[0]
-        else:
-            best_idx = 0
-        best_real, _, best_placement = seed_results[best_idx]
-
-        if self.ensemble_summary:
-            best_real_str = (
-                f"{best_real:.4f}" if best_real != float("inf") else "n/a"
-            )
-            print(
-                f"  [{benchmark.name}] ensemble best: halo={halos[best_idx]:.2f} "
-                f"proxy={best_real_str}",
-                flush=True,
-            )
-            # Trailing blank line so adjacent benchmarks don't run together.
-            print(flush=True)
-
-        if isinstance(best_placement, torch.Tensor):
-            return best_placement.cpu().float()
-        return best_placement
