@@ -12,8 +12,8 @@ versions):
        real TILOS proxy when available.
 
 Usage:
-    uv run evaluate submissions/will_seed/tierplacev4.py
-    uv run evaluate submissions/will_seed/tierplacev4.py --all
+    uv run evaluate submissions/will_seed/tierplacev.py
+    uv run evaluate submissions/will_seed/tierplacev.py --all
 """
 
 from __future__ import annotations
