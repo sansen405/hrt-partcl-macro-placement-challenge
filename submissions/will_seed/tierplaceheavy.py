@@ -267,6 +267,49 @@ def _congestion_loss(pos_all, net_idx, net_mask, gx, gy, bw, bh, gamma):
     return top.mean()
 
 
+def _rudy_congestion_loss(pos_all, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=0.10):
+    """RUDY-style congestion hotspot estimator (top-k mean).
+
+    For each net, compute a (smoothed) pin bounding box and distribute a
+    "wire influence" uniformly over that rectangle. Hotspots are regions
+    where many net rectangles overlap.
+
+    This is *not* the true router congestion, but it correlates better than
+    plain HPWL with routing pressure because it localizes net demand.
+    """
+    neg_inf = float("-inf")
+    px = pos_all[net_idx, 0]
+    py = pos_all[net_idx, 1]
+
+    # Smooth bounding box via log-sum-exp softmax (same as WA extremes).
+    xmax = (px * F.softmax(px.masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    xmin = -((-px) * F.softmax((-px).masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    ymax = (py * F.softmax(py.masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+    ymin = -((-py) * F.softmax((-py).masked_fill(~net_mask, neg_inf) / gamma, dim=1)).sum(1)
+
+    # Net "wire influence": scale by (w+h)/area to emphasize narrow, dense boxes.
+    w = (xmax - xmin).clamp(min=bw)
+    h = (ymax - ymin).clamp(min=bh)
+    n_pins = net_mask.sum(1).to(px.dtype)
+    influence = n_pins * (w + h) / (w * h + 1e-9)
+
+    # Distribute influence over the bbox onto the routing grid using smooth
+    # rectangle indicator functions.
+    tau = max(bw, bh) * 0.3
+    gx_ = torch.sigmoid((gx[None, :] - xmin[:, None]) / tau) - torch.sigmoid(
+        (gx[None, :] - xmax[:, None]) / tau
+    )
+    gy_ = torch.sigmoid((gy[None, :] - ymin[:, None]) / tau) - torch.sigmoid(
+        (gy[None, :] - ymax[:, None]) / tau
+    )
+    rudy = gy_.T @ (influence[:, None] * gx_)
+
+    flat = rudy.reshape(-1)
+    k = max(1, int(flat.shape[0] * float(top_frac)))
+    top, _ = torch.topk(flat, k)
+    return top.mean()
+
+
 def _legalize(pos_t, sizes, fixed_t, nh, cw, ch, gap=0.05):
     pos = pos_t[:nh].detach().cpu().numpy().copy().astype(np.float64)
     sz = sizes[:nh].cpu().numpy().astype(np.float64)
@@ -420,7 +463,10 @@ def _run_phase1(
         tier_cw = _TIER_CW[tier]
         cong_w = tier_cw * ramp
         if cong_w > 0:
-            cl_n = _congestion_loss(all_pos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+            # RUDY is a better congestion hotspot proxy than plain HPWL.
+            cl_n = _rudy_congestion_loss(
+                all_pos, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=0.10
+            ) / cl_0
         else:
             cl_n = torch.tensor(0.0, device=dev, dtype=dt)
 
@@ -535,6 +581,10 @@ class AnalyticalPlacer:
         gate_with_real_proxy: bool = True,
         joint_legalize_gap: float = 0.05,
         run_v2_soft_polish_after: bool = True,
+        # RUDY congestion (better than HPWL-only for hotspots)
+        use_rudy_congestion: bool = True,
+        rudy_top_frac: float = 0.10,
+        rudy_weight_scale: float = 1.0,
         # v4 multi-start ensemble (Sprint 1 step A)
         ensemble_halos=(0.06, 0.08, 0.10, 0.12),
         ensemble_summary: bool = True,
@@ -572,6 +622,11 @@ class AnalyticalPlacer:
         self.gate_with_real_proxy = gate_with_real_proxy
         self.joint_legalize_gap = joint_legalize_gap
         self.run_v2_soft_polish_after = run_v2_soft_polish_after
+
+        # RUDY congestion params
+        self.use_rudy_congestion = bool(use_rudy_congestion)
+        self.rudy_top_frac = float(rudy_top_frac)
+        self.rudy_weight_scale = float(rudy_weight_scale)
 
         # v4 ensemble params
         self.ensemble_halos = tuple(ensemble_halos) if ensemble_halos else (halo_frac,)
@@ -825,8 +880,10 @@ class AnalyticalPlacer:
                 apos = torch.cat([p_l, port_pos], dim=0)
                 wl = _wa_wirelength(apos, net_idx, net_mask, gamma_l) / wl_0
                 dl = winner_fn(p_l) / winner_norm
-                cl = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma_l) / cl_0
-                lo = wl + dw_l * dl + cw_l * cl
+                cl = _rudy_congestion_loss(
+                    apos, net_idx, net_mask, gx, gy, bw, bh, gamma_l, top_frac=0.10
+                ) / cl_0
+                lo = wl + dw_l * dl + (cw_l * cl)
                 lo.backward()
                 with torch.no_grad():
                     p_l.grad[fixed] = 0.0
@@ -863,7 +920,9 @@ class AnalyticalPlacer:
                 apos = torch.cat([q, port_pos], dim=0)
                 wl_s = _wa_wirelength(apos, net_idx, net_mask, gamma_f) / wl_0
                 dl_s = _density_topk(q, sizes_real, nm, gx, gy, bw, bh) / topk_0
-                cl_s = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma_f) / cl_0
+                cl_s = _rudy_congestion_loss(
+                    apos, net_idx, net_mask, gx, gy, bw, bh, gamma_f, top_frac=0.10
+                ) / cl_0
                 loss_s = wl_s + dw_p3_adapt * dl_s + cw3 * cl_s
                 loss_s.backward()
                 with torch.no_grad():
@@ -920,7 +979,10 @@ class AnalyticalPlacer:
             apos0 = torch.cat([placement, port_pos], dim=0)
             wl_0 = max(abs(_wa_wirelength(apos0, net_idx, net_mask, gamma).item()), 1.0)
             den_0 = max(abs(_density_topk(placement, sizes, nm, gx, gy, bw, bh).item()), 1e-6)
-            cl_0 = max(abs(_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma).item()), 1e-6)
+            cl_0 = max(
+                abs(_rudy_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=0.10).item()),
+                1e-6,
+            )
 
         dw = self.dw_p3 * self.soft_polish_dw_scale
         tier = benchmark_stress_tier(benchmark) if self.adaptive_hard else 0
@@ -936,7 +998,9 @@ class AnalyticalPlacer:
                 apos = torch.cat([x, port_pos], dim=0)
                 wl = float((_wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0).item())
                 den = float((_density_topk(x, sizes, nm, gx, gy, bw, bh) / den_0).item())
-                cl = float((_congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0).item())
+                cl = float(
+                    (_rudy_congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=0.10) / cl_0).item()
+                )
                 return wl + dw * den + cw_polish * cl
 
         base_score = score(placement)
@@ -950,7 +1014,9 @@ class AnalyticalPlacer:
             apos = torch.cat([p, port_pos], dim=0)
             wl = _wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0
             den = _density_topk(p, sizes, nm, gx, gy, bw, bh) / den_0
-            cl = _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+            cl = _rudy_congestion_loss(
+                apos, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=0.10
+            ) / cl_0
             loss = wl + dw * den + cw_polish * cl
             loss.backward()
             with torch.no_grad():
@@ -1028,7 +1094,10 @@ class AnalyticalPlacer:
             apos0 = torch.cat([placement, port_pos], dim=0)
             wl_0 = max(abs(_wa_wirelength(apos0, net_idx, net_mask, gamma).item()), 1.0)
             den_0 = max(abs(_density_topk(placement, sizes, nm, gx, gy, bw, bh).item()), 1e-6)
-            cl_0 = max(abs(_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma).item()), 1e-6)
+            cl_0 = max(
+                abs(_rudy_congestion_loss(apos0, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=float(self.rudy_top_frac)).item()),
+                1e-6,
+            )
             if pin_offsets is not None:
                 pd_0 = max(
                     abs(_pin_density_topk(placement[:nh], pin_offsets, pin_owner, gx, gy, bw, bh).item()),
@@ -1056,8 +1125,13 @@ class AnalyticalPlacer:
                 apos = torch.cat([x, port_pos], dim=0)
                 wl = (_wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0).item()
                 den = (_density_topk(x, sizes, nm, gx, gy, bw, bh) / den_0).item()
-                cl = (_congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0).item()
-                return float(wl + dw * den + cw_joint * cl)
+                cl = (
+                    _rudy_congestion_loss(
+                        apos, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=float(self.rudy_top_frac)
+                    )
+                    / cl_0
+                ).item()
+                return float(wl + dw * den + (cw_joint * float(self.rudy_weight_scale)) * cl)
 
         p = placement.clone().requires_grad_(True)
         lr = max(1e-4, self.lr * float(self.joint_polish_lr_scale))
@@ -1069,7 +1143,11 @@ class AnalyticalPlacer:
             loss = (
                 _wa_wirelength(apos, net_idx, net_mask, gamma) / wl_0
                 + dw * _density_topk(p, sizes, nm, gx, gy, bw, bh) / den_0
-                + cw_joint * _congestion_loss(apos, net_idx, net_mask, gx, gy, bw, bh, gamma) / cl_0
+                + (cw_joint * float(self.rudy_weight_scale))
+                * _rudy_congestion_loss(
+                    apos, net_idx, net_mask, gx, gy, bw, bh, gamma, top_frac=float(self.rudy_top_frac)
+                )
+                / cl_0
             )
             if pd_w > 0.0 and pin_offsets is not None and nh >= 1:
                 loss = loss + pd_w * _pin_density_topk(p[:nh], pin_offsets, pin_owner, gx, gy, bw, bh) / pd_0
