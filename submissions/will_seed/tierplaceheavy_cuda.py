@@ -137,38 +137,36 @@ def benchmark_stress_tier(benchmark: Benchmark) -> int:
 
 def _phase_profile(tier: int, target_util: float):
     """Select optimization profile by stress tier."""
-    match tier:
-        case 0:
-            return {
-                "congestion_start_frac": 0.60,
-                "pilot_congestion_weight": 0.20,
-                "lbfgs_congestion_weight": 0.00,
-            }
-        case 1:
-            cstart = 0.54
-            if target_util >= 0.62:
-                cstart -= 0.04
-            if target_util >= 0.70:
-                cstart -= 0.04
-            return {
-                "congestion_start_frac": float(min(0.65, max(0.30, cstart))),
-                "pilot_congestion_weight": 0.50,
-                "lbfgs_congestion_weight": 0.05,
-            }
-        case _:
-            cstart = 0.48
-            if target_util >= 0.62:
-                cstart -= 0.04
-            if target_util >= 0.70:
-                cstart -= 0.04
-            lbfgs_cw = 0.08
-            if target_util >= 0.62:
-                lbfgs_cw *= 1.1
-            return {
-                "congestion_start_frac": float(min(0.65, max(0.28, cstart))),
-                "pilot_congestion_weight": 0.50,
-                "lbfgs_congestion_weight": float(min(lbfgs_cw, 0.1)),
-            }
+    if tier == 0:
+        return {
+            "congestion_start_frac": 0.60,
+            "pilot_congestion_weight": 0.20,
+            "lbfgs_congestion_weight": 0.00,
+        }
+    if tier == 1:
+        cstart = 0.54
+        if target_util >= 0.62:
+            cstart -= 0.04
+        if target_util >= 0.70:
+            cstart -= 0.04
+        return {
+            "congestion_start_frac": float(min(0.65, max(0.30, cstart))),
+            "pilot_congestion_weight": 0.50,
+            "lbfgs_congestion_weight": 0.05,
+        }
+    cstart = 0.48
+    if target_util >= 0.62:
+        cstart -= 0.04
+    if target_util >= 0.70:
+        cstart -= 0.04
+    lbfgs_cw = 0.08
+    if target_util >= 0.62:
+        lbfgs_cw *= 1.1
+    return {
+        "congestion_start_frac": float(min(0.65, max(0.28, cstart))),
+        "pilot_congestion_weight": 0.50,
+        "lbfgs_congestion_weight": float(min(lbfgs_cw, 0.1)),
+    }
 
 
 def _uniform_spread(benchmark: Benchmark, dev, dt):
