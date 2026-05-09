@@ -753,7 +753,7 @@ class AnalyticalPlacer:
         lbfgs_max_iter: int = 10,
         halo_frac: float = 0.08,
         # Phase 4 (joint hard+soft polish)
-        joint_polish_iters: int = 500,
+        joint_polish_iters: int = 1500,
         joint_polish_lr_scale: float = 0.05,
         joint_polish_dw_scale: float = 0.6,
         joint_polish_cw_scale: float = 1.0,

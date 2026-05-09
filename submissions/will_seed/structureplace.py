@@ -22,12 +22,14 @@ Archetypes (3 new + the existing uniform = 4):
     * ``perimeter``  — Concentric rings from the outer boundary inward.
                        Largest macros land on the outer ring; the centre
                        is left clear for soft cells.
-    * ``cross``      — Two orthogonal bands (horizontal + vertical)
-                       through the canvas centre, forming a ``+``.
-                       Splits the canvas into four soft-cell quadrants.
-    * ``cluster``    — Four compact macro clusters at the canvas
-                       quadrant centres (round-robin assignment by
-                       area so the clusters are roughly balanced).
+    * ``cross``      — Four dense quadrant blocks centred at
+                       ``(W/4, H/4)`` etc., leaving a clean ``+`` of
+                       empty space through the canvas centre and a
+                       margin around the canvas edges.
+    * ``cluster``    — Four dense quadrant blocks anchored at the
+                       canvas corners, growing inward.  Empty space
+                       only appears as a ``+`` through the middle —
+                       the blocks themselves reach the outer edges.
 
 Why these four?  They span the major topologies a placer can collapse
 into: spatially uniform, edge-attracted, axis-aligned channels, and
@@ -217,88 +219,16 @@ def _spread_perimeter(benchmark: Benchmark, dev, dt) -> torch.Tensor:
 
 
 def _spread_cross(benchmark: Benchmark, dev, dt) -> torch.Tensor:
-    """``+`` pattern: a horizontal centre band and a vertical centre band.
+    """``+`` channels: four dense quadrant blocks centred in each quadrant.
 
-    Splits the macros 50/50 by area-rank order. The largest half goes
-    into the horizontal band (cw is typically the bigger dimension on
-    these benchmarks, so a horizontal band carries more macros without
-    collisions); the other half forms the vertical band. Both bands are
-    multi-row when needed.
-    """
-    nh = benchmark.num_hard_macros
-    cw = float(benchmark.canvas_width)
-    ch = float(benchmark.canvas_height)
-    init = benchmark.macro_positions.to(dev, dt).clone()
-    movable = _movable_indices(benchmark, dev)
-    n_mov = len(movable)
-    if n_mov == 0:
-        return init
-
-    sizes = benchmark.macro_sizes[:nh].to(dev, dt)
-    hw_all = sizes[:, 0] / 2
-    hh_all = sizes[:, 1] / 2
-
-    avg_w = float(sizes[movable, 0].mean())
-    avg_h = float(sizes[movable, 1].mean())
-
-    sorted_movable = _sort_by_area_desc(movable, sizes)
-    # Largest macros to the horizontal band (more pin density tends to
-    # benefit from spanning the canvas; the vertical band gets the
-    # remaining smaller macros).
-    n_h = (n_mov + 1) // 2
-    h_macros = sorted_movable[:n_h]
-    v_macros = sorted_movable[n_h:]
-
-    # Horizontal band: rows × cols laid out around y = ch/2
-    if h_macros:
-        h_cols = max(
-            1, int(round(math.sqrt(len(h_macros) * (cw * 0.9) / max(avg_h * 1.1, 1e-6))))
-        )
-        h_cols = max(1, min(len(h_macros), h_cols))
-        h_rows = max(1, math.ceil(len(h_macros) / h_cols))
-        xs = torch.linspace(cw * 0.06, cw * 0.94, h_cols, device=dev, dtype=dt).tolist()
-        band_height = h_rows * avg_h * 1.08
-        y_top = ch * 0.5 - band_height / 2
-        ys = [y_top + (r + 0.5) * avg_h * 1.08 for r in range(h_rows)]
-        for k, i in enumerate(h_macros):
-            r = k // h_cols
-            c = k % h_cols
-            cx = xs[c]
-            cy = ys[min(r, len(ys) - 1)]
-            init[i, 0] = max(float(hw_all[i]), min(cw - float(hw_all[i]), cx))
-            init[i, 1] = max(float(hh_all[i]), min(ch - float(hh_all[i]), cy))
-
-    # Vertical band: rows × cols laid out around x = cw/2
-    if v_macros:
-        v_rows = max(
-            1, int(round(math.sqrt(len(v_macros) * (ch * 0.9) / max(avg_w * 1.1, 1e-6))))
-        )
-        v_rows = max(1, min(len(v_macros), v_rows))
-        v_cols = max(1, math.ceil(len(v_macros) / v_rows))
-        ys2 = torch.linspace(ch * 0.06, ch * 0.94, v_rows, device=dev, dtype=dt).tolist()
-        band_width = v_cols * avg_w * 1.08
-        x_left = cw * 0.5 - band_width / 2
-        xs2 = [x_left + (c + 0.5) * avg_w * 1.08 for c in range(v_cols)]
-        for k, i in enumerate(v_macros):
-            r = k // v_cols
-            c = k % v_cols
-            cx = xs2[min(c, len(xs2) - 1)]
-            cy = ys2[r]
-            init[i, 0] = max(float(hw_all[i]), min(cw - float(hw_all[i]), cx))
-            init[i, 1] = max(float(hh_all[i]), min(ch - float(hh_all[i]), cy))
-
-    return init
-
-
-def _spread_cluster(
-    benchmark: Benchmark, dev, dt, k_clusters: int = 4
-) -> torch.Tensor:
-    """K=4 compact clusters at the canvas quadrant centres.
-
-    Macros are sorted by area and dealt round-robin into the four
-    quadrant bins so the clusters carry roughly equal total area. Inside
-    each cluster they are laid out in a tight square-ish grid centred
-    on the quadrant centroid.
+    Macros are dealt round-robin (area-sorted) into four quadrant bins so
+    the bins carry roughly equal total area. Inside each quadrant, the
+    bin is laid out as a tight ``rows × cols`` grid centred on the
+    quadrant centroid ``(W/4, H/4)`` etc.  Because each block is centred
+    *inside* its quadrant, there is a margin on every side — including
+    against the canvas edges and against the canvas centreline — which
+    leaves a clean ``+`` of empty space through the middle for soft
+    cells to flow through.
     """
     nh = benchmark.num_hard_macros
     cw = float(benchmark.canvas_width)
@@ -314,22 +244,16 @@ def _spread_cluster(
     hh_all = sizes[:, 1] / 2
 
     centers = [
-        (cw * 0.27, ch * 0.27),
-        (cw * 0.73, ch * 0.27),
-        (cw * 0.27, ch * 0.73),
-        (cw * 0.73, ch * 0.73),
+        (cw * 0.25, ch * 0.25),
+        (cw * 0.75, ch * 0.25),
+        (cw * 0.25, ch * 0.75),
+        (cw * 0.75, ch * 0.75),
     ]
-    if k_clusters > 4:
-        # Extra clusters: drop additional centres on a diagonal jitter.
-        for j in range(k_clusters - 4):
-            t = (j + 1) / (k_clusters - 3)
-            centers.append((cw * (0.5 + 0.18 * math.cos(j)), ch * (0.5 + 0.18 * math.sin(j))))
-    centers = centers[:k_clusters]
 
     sorted_movable = _sort_by_area_desc(movable, sizes)
-    bins: List[List[int]] = [[] for _ in range(k_clusters)]
+    bins: List[List[int]] = [[] for _ in range(4)]
     for rank, i in enumerate(sorted_movable):
-        bins[rank % k_clusters].append(i)
+        bins[rank % 4].append(i)
 
     for ci, mlist in enumerate(bins):
         if not mlist:
@@ -340,11 +264,100 @@ def _spread_cluster(
         avg_h = float(sum(float(sizes[i, 1]) for i in mlist) / n_c)
         cols = max(1, int(round(math.sqrt(n_c))))
         rows = max(1, math.ceil(n_c / cols))
+        # Tight pitch so the block stays compact and the ``+`` channel
+        # between blocks is wide and clearly visible.
+        pitch_w = avg_w * 1.04
+        pitch_h = avg_h * 1.04
         for k2, i in enumerate(mlist):
             r = k2 // cols
             c = k2 % cols
-            cx = cx_c + (c - (cols - 1) / 2.0) * avg_w * 1.04
-            cy = cy_c + (r - (rows - 1) / 2.0) * avg_h * 1.04
+            cx = cx_c + (c - (cols - 1) / 2.0) * pitch_w
+            cy = cy_c + (r - (rows - 1) / 2.0) * pitch_h
+            init[i, 0] = max(float(hw_all[i]), min(cw - float(hw_all[i]), cx))
+            init[i, 1] = max(float(hh_all[i]), min(ch - float(hh_all[i]), cy))
+
+    return init
+
+
+def _spread_cluster(
+    benchmark: Benchmark, dev, dt, k_clusters: int = 4
+) -> torch.Tensor:
+    """Four corner-anchored quadrant clusters that grow inward.
+
+    Each of the four quadrants gets a tight grid of macros that is
+    flush with the canvas corner and expands toward the canvas centre.
+    Compared to ``cross`` (whose blocks are centred in their quadrants
+    and therefore have a margin on *all* sides), ``cluster`` only has a
+    margin on the inner sides of each block.  The empty space therefore
+    forms a single ``+`` through the middle of the canvas while the
+    blocks themselves reach the outer edges.
+
+    Macros are sorted by area and dealt round-robin into the four
+    quadrant bins so each cluster carries roughly equal total area.
+    """
+    nh = benchmark.num_hard_macros
+    cw = float(benchmark.canvas_width)
+    ch = float(benchmark.canvas_height)
+    init = benchmark.macro_positions.to(dev, dt).clone()
+    movable = _movable_indices(benchmark, dev)
+    n_mov = len(movable)
+    if n_mov == 0:
+        return init
+
+    sizes = benchmark.macro_sizes[:nh].to(dev, dt)
+    hw_all = sizes[:, 0] / 2
+    hh_all = sizes[:, 1] / 2
+
+    sorted_movable = _sort_by_area_desc(movable, sizes)
+    k_eff = max(1, min(k_clusters, 4))
+    bins: List[List[int]] = [[] for _ in range(k_eff)]
+    for rank, i in enumerate(sorted_movable):
+        bins[rank % k_eff].append(i)
+
+    # Each quadrant is identified by a corner anchor and an inward
+    # direction.  Anchor (ax, ay) is the quadrant's outer canvas
+    # corner; direction (dx, dy) points toward the canvas centre.
+    quadrants = [
+        ((0.0, 0.0), (+1, +1)),         # top-left  (anchor at canvas top-left)
+        ((cw, 0.0), (-1, +1)),          # top-right
+        ((0.0, ch), (+1, -1)),          # bottom-left
+        ((cw, ch), (-1, -1)),           # bottom-right
+    ][:k_eff]
+
+    # Inner margin (toward the canvas centre) — this is what creates
+    # the visible ``+`` channel between the four blocks.
+    inner_margin_x = cw * 0.04
+    inner_margin_y = ch * 0.04
+
+    for ci, mlist in enumerate(bins):
+        if not mlist:
+            continue
+        (ax, ay), (dx, dy) = quadrants[ci]
+        n_c = len(mlist)
+        avg_w = float(sum(float(sizes[i, 0]) for i in mlist) / n_c)
+        avg_h = float(sum(float(sizes[i, 1]) for i in mlist) / n_c)
+        cols = max(1, int(round(math.sqrt(n_c))))
+        rows = max(1, math.ceil(n_c / cols))
+        pitch_w = avg_w * 1.04
+        pitch_h = avg_h * 1.04
+        # Place macro k2 at column c, row r counted *outward* from the
+        # corner anchor. The first macro centre sits half a tile away
+        # from the canvas edge so the block lies fully on-canvas.
+        for k2, i in enumerate(mlist):
+            r = k2 // cols
+            c = k2 % cols
+            cx = ax + dx * (avg_w * 0.5 + c * pitch_w)
+            cy = ay + dy * (avg_h * 0.5 + r * pitch_h)
+            # Keep the block on its own side of the centreline so the
+            # ``+`` channel stays clean even if rows/cols overflow.
+            if dx > 0:
+                cx = min(cx, cw * 0.5 - inner_margin_x - float(hw_all[i]))
+            else:
+                cx = max(cx, cw * 0.5 + inner_margin_x + float(hw_all[i]))
+            if dy > 0:
+                cy = min(cy, ch * 0.5 - inner_margin_y - float(hh_all[i]))
+            else:
+                cy = max(cy, ch * 0.5 + inner_margin_y + float(hh_all[i]))
             init[i, 0] = max(float(hw_all[i]), min(cw - float(hw_all[i]), cx))
             init[i, 1] = max(float(hh_all[i]), min(ch - float(hh_all[i]), cy))
 
@@ -376,10 +389,16 @@ class StructurePlacer:
     """
 
     DEFAULT_ARCHETYPES: tuple = ("uniform", "perimeter", "cross", "cluster")
+    # Halo sweep for each archetype. Different halo_frac values give
+    # Phase 1 different effective macro footprints, which lands the
+    # global Adam in different basins → diversification along an axis
+    # orthogonal to the structural archetype itself.
+    DEFAULT_HALOS: tuple = (0.04, 0.06, 0.08, 0.10)
 
     def __init__(
         self,
         archetypes: Optional[Sequence[str]] = None,
+        halos: Optional[Sequence[float]] = None,
         seed: int = 42,
         verbose: bool = True,
         inner_verbose: bool = False,
@@ -388,17 +407,24 @@ class StructurePlacer:
         # when PlacementCost is unavailable (no ``_plc`` attached).
         gate_with_real_proxy: bool = True,
         # Forwarded to AnalyticalPlacer; keep at defaults to match the
-        # standard tierplace.py invocation.
+        # standard tierplace.py invocation. ``halo_frac`` here is
+        # overridden by the per-run halo sweep value.
         placer_kwargs: Optional[Dict] = None,
     ):
         self.archetypes = (
             tuple(archetypes) if archetypes is not None else self.DEFAULT_ARCHETYPES
         )
+        self.halos = (
+            tuple(halos) if halos is not None else self.DEFAULT_HALOS
+        )
         self.seed = seed
         self.verbose = verbose
         self.inner_verbose = inner_verbose
         self.gate_with_real_proxy = gate_with_real_proxy
-        self.placer_kwargs = dict(placer_kwargs or {})
+        # Strip halo_frac from placer_kwargs — the sweep controls it.
+        self.placer_kwargs = {
+            k: v for k, v in dict(placer_kwargs or {}).items() if k != "halo_frac"
+        }
 
     # ---- main entry point ---------------------------------------------------
 
@@ -410,10 +436,14 @@ class StructurePlacer:
                 f"valid options: {sorted(_SPREAD_REGISTRY)}"
             )
 
+        n_runs = len(self.archetypes) * len(self.halos)
         if self.verbose:
             print(
                 f"[{benchmark.name}] StructurePlace sweep: "
-                f"{', '.join(self.archetypes)}",
+                f"{len(self.archetypes)} archetypes × {len(self.halos)} halos "
+                f"= {n_runs} runs "
+                f"(archetypes={', '.join(self.archetypes)}; "
+                f"halos={', '.join(f'{h:.2f}' for h in self.halos)})",
                 flush=True,
             )
 
@@ -424,52 +454,58 @@ class StructurePlacer:
                 spread_fn = _SPREAD_REGISTRY[arch]
                 tierplace._uniform_spread = spread_fn
 
-                t0 = time.time()
-                placer = AnalyticalPlacer(
-                    seed=self.seed,
-                    verbose=self.inner_verbose,
-                    gate_with_real_proxy=self.gate_with_real_proxy,
-                    **self.placer_kwargs,
-                )
-                placement = placer.place(benchmark)
-                runtime = time.time() - t0
+                for halo in self.halos:
+                    t0 = time.time()
+                    placer = AnalyticalPlacer(
+                        seed=self.seed,
+                        verbose=self.inner_verbose,
+                        gate_with_real_proxy=self.gate_with_real_proxy,
+                        halo_frac=halo,
+                        **self.placer_kwargs,
+                    )
+                    placement = placer.place(benchmark)
+                    runtime = time.time() - t0
 
-                proxy_cost, breakdown = self._real_proxy_score(placement, benchmark)
-                results.append(
-                    {
-                        "archetype": arch,
-                        "placement": placement,
-                        "proxy_cost": proxy_cost,
-                        "runtime": runtime,
-                        "breakdown": breakdown,
-                    }
-                )
+                    proxy_cost, breakdown = self._real_proxy_score(
+                        placement, benchmark
+                    )
+                    results.append(
+                        {
+                            "archetype": arch,
+                            "halo": halo,
+                            "placement": placement,
+                            "proxy_cost": proxy_cost,
+                            "runtime": runtime,
+                            "breakdown": breakdown,
+                        }
+                    )
 
-                if self.verbose:
-                    if breakdown is not None:
-                        print(
-                            f"  [{benchmark.name}] arch={arch:<10s} "
-                            f"proxy={proxy_cost:.4f}  "
-                            f"(wl={breakdown['wirelength_cost']:.3f} "
-                            f"den={breakdown['density_cost']:.3f} "
-                            f"cong={breakdown['congestion_cost']:.3f} "
-                            f"overlaps={breakdown['overlap_count']})  "
-                            f"[{runtime:.1f}s]",
-                            flush=True,
-                        )
-                    else:
-                        print(
-                            f"  [{benchmark.name}] arch={arch:<10s} "
-                            f"(no PLC; proxy unavailable)  [{runtime:.1f}s]",
-                            flush=True,
-                        )
+                    if self.verbose:
+                        tag = f"{arch}@h={halo:.2f}"
+                        if breakdown is not None:
+                            print(
+                                f"  [{benchmark.name}] {tag:<22s} "
+                                f"proxy={proxy_cost:.4f}  "
+                                f"(wl={breakdown['wirelength_cost']:.3f} "
+                                f"den={breakdown['density_cost']:.3f} "
+                                f"cong={breakdown['congestion_cost']:.3f} "
+                                f"overlaps={breakdown['overlap_count']})  "
+                                f"[{runtime:.1f}s]",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"  [{benchmark.name}] {tag:<22s} "
+                                f"(no PLC; proxy unavailable)  [{runtime:.1f}s]",
+                                flush=True,
+                            )
         finally:
             tierplace._uniform_spread = original_spread
 
-        # Pick the best archetype: smallest valid (no overlap) proxy
-        # cost; ties broken by smaller wirelength. If every archetype
-        # has overlaps or PLC is unavailable, fall back to the first
-        # archetype's placement.
+        # Pick the best (archetype, halo) pair: smallest valid (no
+        # overlap) proxy cost; ties broken by smaller wirelength. If
+        # every run has overlaps or PLC is unavailable, fall back to
+        # the first run's placement.
         ranked = self._rank(results)
         if not ranked:
             return results[0]["placement"]
@@ -477,7 +513,8 @@ class StructurePlacer:
         winner = ranked[0]
         if self.verbose:
             print(
-                f"[{benchmark.name}] StructurePlace winner: {winner['archetype']} "
+                f"[{benchmark.name}] StructurePlace winner: "
+                f"{winner['archetype']}@h={winner['halo']:.2f} "
                 f"(proxy={winner['proxy_cost']:.4f})",
                 flush=True,
             )

@@ -1,0 +1,8 @@
+Host ec2gpu
+    HostName ec2-98-87-1-234.compute-1.amazonaws.com
+    User ec2-user
+    IdentityFile ~/Downloads/ec2-gpu.pem
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /Users/sanjaysenthil/partcl-macro-place-challenge/.ec2/known_hosts
+    ServerAliveInterval 30
+    ServerAliveCountMax 4
